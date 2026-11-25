@@ -1,38 +1,39 @@
-import requests
-from bs4 import BeautifulSoup
+"""CLI debug tool for the PhilGEPS merchant lookup.
 
-session = requests.Session()
-headers = {
-    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
-    'Referer': 'https://philgeps.gov.ph/CmsHomePages/regMerchants',
-    'X-Requested-With': 'XMLHttpRequest',
-    'Accept': 'text/html, */*; q=0.01',
-}
+Usage (from the backend directory):
 
-url = 'https://philgeps.gov.ph/CmsHomePages/regMerchants'
+    .\\.venv\\Scripts\\python.exe script\\philgeps_webscraper.py "JDF HEAVY EQUIPMENT"
 
-# The page doesn't have a CSRF token input, but the GET endpoint works directly
-orgName = "JDF HEAVY EQUIPMENT PARTS CENTER"
-candidates = [
-    # (method, url, data_or_params)
-    ('GET', f'{url}?page=1&searchOrgName={orgName}&searchMembershipStatus=All', None),
-]
+Prints the cached-lookup payload (match + results) as JSON. The application
+itself calls the same service through GET /api/philgeps/merchants/.
+"""
 
-for method, u, data in candidates:
+import json
+import os
+import sys
+
+import django
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
+django.setup()
+
+from ledger.philgeps import PhilGepsError, lookup  # noqa: E402
+
+
+def main() -> int:
+    if len(sys.argv) < 2 or not ' '.join(sys.argv[1:]).strip():
+        print('usage: python script/philgeps_webscraper.py "PAYEE NAME"')
+        return 2
+    query = ' '.join(sys.argv[1:])
     try:
-        r = (session.get(u, headers=headers) if method == 'GET'
-             else session.post(u, data=data, headers=headers))
-        soup_r = BeautifulSoup(r.text, 'html.parser')
-        trs = soup_r.find_all('tr')
-        labeled = [tr for tr in trs if tr.find('td', {'data-label': 'organization_name'})]
-        print(f"[{method}] {u}\n  status={r.status_code} len={len(r.text)} "
-              f"tr={len(trs)} labeled_rows={len(labeled)}")
-        if labeled:
-            print("  ✅ FOUND DATA ENDPOINT")
-            for tr in labeled[:3]:
-                row = {td['data-label']: td.get_text(separator=' ', strip=True)
-                       for td in tr.find_all('td') if td.get('data-label')}
-                print("   ", row)
-            break
-    except Exception as e:
-        print(f"[{method}] {u} → ERROR: {e}")
+        payload = lookup(query, force_refresh=True)
+    except PhilGepsError as exc:
+        print(f'lookup failed: {exc}')
+        return 1
+    print(json.dumps(payload, indent=2, ensure_ascii=False))
+    return 0
+
+
+if __name__ == '__main__':
+    raise SystemExit(main())

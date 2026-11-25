@@ -27,6 +27,7 @@ def nested_routes(segment, viewset, extra_batch=False, extra_detail=None):
 urlpatterns = [
     path('me/workspaces/', views.MyWorkspacesView.as_view()),
     path('me/invites/', views.MyInvitesView.as_view()),
+    path('philgeps/merchants/', views.PhilGepsLookupView.as_view()),
     path('invites/<str:pk>/accept/', views.accept_invite),
     path('workspaces/', workspace_list),
     path('workspaces/<str:pk>/', workspace_detail),

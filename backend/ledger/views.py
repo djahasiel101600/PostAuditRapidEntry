@@ -9,6 +9,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from . import philgeps
 from .models import (
     CoaAccount,
     EntryTemplate,
@@ -506,3 +507,26 @@ class MyInvitesView(APIView):
         email = (request.user.email or '').lower()
         invites = WorkspaceInvite.objects.filter(invitedEmail=email, status='pending')
         return Response(WorkspaceInviteSerializer(invites, many=True).data)
+
+
+class PhilGepsLookupView(APIView):
+    """Look up a payee in the public PhilGEPS registered-merchants registry."""
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        name = ' '.join(str(request.query_params.get('name', '')).split())[:120]
+        if len(name) < 3:
+            return Response(
+                {'detail': 'Payee name too short.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        force_refresh = request.query_params.get('refresh') == '1'
+        try:
+            payload = philgeps.lookup(name, force_refresh=force_refresh)
+        except philgeps.PhilGepsError:
+            return Response(
+                {'detail': 'PhilGEPS is unavailable right now - enter the date manually.'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+        return Response(payload)

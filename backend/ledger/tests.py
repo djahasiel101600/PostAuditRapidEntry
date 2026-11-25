@@ -1,8 +1,11 @@
 """Permission/validation tests ported from tests/firestore-rules.test.ts."""
+from unittest import mock
+
 from django.contrib.auth import get_user_model
 from rest_framework import status
 from rest_framework.test import APITestCase
 
+from . import philgeps
 from .models import CoaAccount, Transaction, Workspace, WorkspaceInvite, WorkspaceMember
 
 User = get_user_model()
@@ -346,3 +349,110 @@ class WorkspaceAndMemberTests(WorkspaceTestBase):
         self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
         self.assertEqual(Transaction.objects.count(), 0)
         self.assertEqual(WorkspaceMember.objects.count(), 0)
+
+
+MERCHANT_FRAGMENT = '''
+<tr>
+  <td data-label="organization_name"><div class="wrapped-long-string">
+    JDF HEAVY EQUIPMENT PARTS CENTER </div></td>
+  <td data-label="type"> Single Proprietorship </td>
+  <td data-label="red_approval_date"> 13-Nov-2012 </td>
+  <td data-label="status"> Platinum </td>
+  <td data-label="merchant_activity"> Active </td>
+  <td data-label="issuancedate"> 11-Jun-2026 </td>
+  <td data-label="expiredate"> 11-Jun-2027 </td>
+  <td data-label="ref_numbers"> 201211-61858-611258536 </td>
+</tr>
+<tr>
+  <td data-label="organization_name"><div class="wrapped-long-string">
+    PYRAMID CONSOLIDATED BUILDERS &amp; GENERAL MERCHANDISE </div></td>
+  <td data-label="type"> Single Proprietorship </td>
+  <td data-label="red_approval_date"> 10-Dec-2007 </td>
+  <td data-label="status"> Platinum </td>
+  <td data-label="merchant_activity"> Active </td>
+  <td data-label="issuancedate"> 20-Nov-2026 </td>
+  <td data-label="expiredate"> 17-Dec-2027 </td>
+  <td data-label="ref_numbers"> 200712-17928-925163381 </td>
+</tr>
+'''
+
+JDF_RECORD = {
+    'name': 'JDF HEAVY EQUIPMENT PARTS CENTER',
+    'merchantType': 'Single Proprietorship',
+    'redApprovalDate': '2012-11-13',
+    'status': 'Platinum',
+    'activity': 'Active',
+    'issuedDate': '2026-06-11',
+    'expiresDate': '2027-06-11',
+    'refNumber': '201211-61858-611258536',
+}
+
+
+class PhilGepsParserTests(APITestCase):
+    def test_parses_rows_with_nested_name_cells(self):
+        rows = philgeps._parse_rows(MERCHANT_FRAGMENT)
+        self.assertEqual(len(rows), 2)
+        self.assertEqual(rows[0], JDF_RECORD)
+        self.assertEqual(rows[1]['name'], 'PYRAMID CONSOLIDATED BUILDERS & GENERAL MERCHANDISE')
+        self.assertEqual(rows[1]['redApprovalDate'], '2007-12-10')
+
+    def test_empty_fragment_yields_no_rows(self):
+        self.assertEqual(philgeps._parse_rows('   '), [])
+
+    def test_name_normalization_for_exact_match(self):
+        self.assertEqual(
+            philgeps._normalize_name('  JDF Heavy Equipment  Parts Center. '),
+            'jdf heavy equipment parts center',
+        )
+
+
+class PhilGepsLookupTests(APITestCase):
+    url = '/api/philgeps/merchants/'
+
+    def setUp(self):
+        self.user = make_user('uid-lookup')
+        with philgeps._cache_lock:
+            philgeps._cache.clear()
+
+    def test_requires_authentication(self):
+        response = self.client.get(self.url, {'name': 'JDF'})
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_rejects_short_names(self):
+        self.client.force_authenticate(user=self.user)
+        response = self.client.get(self.url, {'name': 'ab'})
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_returns_exact_match(self):
+        self.client.force_authenticate(user=self.user)
+        with mock.patch.object(
+            philgeps, 'search_merchants', return_value=[dict(JDF_RECORD)]
+        ) as fetch:
+            response = self.client.get(
+                self.url, {'name': 'jdf heavy equipment parts center'}
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['cached'])
+        self.assertEqual(response.data['match'], JDF_RECORD)
+        self.assertEqual(len(response.data['results']), 1)
+        fetch.assert_called_once()
+
+    def test_upstream_failure_returns_502(self):
+        self.client.force_authenticate(user=self.user)
+        with mock.patch.object(
+            philgeps, 'search_merchants', side_effect=philgeps.PhilGepsError('down')
+        ):
+            response = self.client.get(self.url, {'name': 'JDF'})
+        self.assertEqual(response.status_code, status.HTTP_502_BAD_GATEWAY)
+
+    def test_cache_hits_and_force_refresh(self):
+        with mock.patch.object(
+            philgeps, 'search_merchants', return_value=[dict(JDF_RECORD)]
+        ) as fetch:
+            first = philgeps.lookup('JDF HEAVY EQUIPMENT PARTS CENTER')
+            second = philgeps.lookup('jdf heavy equipment parts center')
+            third = philgeps.lookup('JDF HEAVY EQUIPMENT PARTS CENTER', force_refresh=True)
+        self.assertFalse(first['cached'])
+        self.assertTrue(second['cached'])
+        self.assertFalse(third['cached'])
+        self.assertEqual(fetch.call_count, 2)

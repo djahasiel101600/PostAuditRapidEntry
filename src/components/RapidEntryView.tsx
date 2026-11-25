@@ -48,6 +48,11 @@ import {
   sanitizeVerificationAuditTrail,
 } from '../lib/taxAndLedger';
 import {
+  formatPhilGepsDate,
+  lookupPhilGepsMerchant,
+  type PhilGepsMerchant,
+} from '../lib/philgeps';
+import {
   ACCOUNT_ROLE_LABELS,
   AUDIT_ATTRIBUTE_LABELS,
   MONTHS,
@@ -338,6 +343,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [remarks, setRemarks] = useState<string>('complete');
   const [procurement, setProcurement] = useState<ProcurementMeta>({});
   const [showProcurement, setShowProcurement] = useState<boolean>(false);
+  const [philgepsLookup, setPhilgepsLookup] = useState<{
+    status: 'idle' | 'loading' | 'found' | 'not_found' | 'error';
+    merchant?: PhilGepsMerchant;
+    nearNames?: string[];
+    message?: string;
+  }>({ status: 'idle' });
+  const philgepsLookupSeq = useRef(0);
   const [showAllVoucherFields, setShowAllVoucherFields] = useState<boolean>(false);
 
   const [submitting, setSubmitting] = useState(false);
@@ -412,6 +424,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setAttributes(defaultAttributes());
     setRemarks('complete');
     setProcurement({});
+    setPhilgepsLookup({ status: 'idle' });
     setShowProcurement(false);
     setDateReceived('');
     setOrNoDate('');
@@ -461,6 +474,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setAttributes(editingTx.attributes);
     setRemarks(editingTx.remarks || '');
     setProcurement(editingTx.procurement || {});
+    setPhilgepsLookup({ status: 'idle' });
     setShowProcurement(
       Boolean(editingTx.procurement && Object.keys(editingTx.procurement).length > 0),
     );
@@ -600,6 +614,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   };
 
   const handlePayeeChange = (val: string) => {
+    philgepsLookupSeq.current += 1;
+    setPhilgepsLookup({ status: 'idle' });
     setPayeeName(val);
     const matched = payees.find((p) => p.name.toLowerCase() === val.trim().toLowerCase());
     if (matched) {
@@ -612,6 +628,69 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       }
     }
   };
+
+  const handlePhilGepsLookup = async () => {
+    const query = payeeName.trim();
+    if (query.length < 3) {
+      setPhilgepsLookup({ status: 'error', message: 'Enter the payee name first.' });
+      return;
+    }
+    const seq = (philgepsLookupSeq.current += 1);
+    setPhilgepsLookup({ status: 'loading' });
+    try {
+      const res = await lookupPhilGepsMerchant(query);
+      if (philgepsLookupSeq.current !== seq) return;
+      if (res.match) {
+        setPhilgepsLookup({ status: 'found', merchant: res.match });
+        const fill = formatPhilGepsDate(res.match.redApprovalDate);
+        if (fill) {
+          // Never overwrite a manually entered reference/date
+          setProcurement((p) =>
+            p.philgepsDate?.trim() ? p : { ...p, philgepsDate: fill },
+          );
+        }
+      } else {
+        setPhilgepsLookup({
+          status: 'not_found',
+          nearNames: res.results.slice(0, 3).map((r) => r.name),
+        });
+      }
+    } catch {
+      if (philgepsLookupSeq.current !== seq) return;
+      setPhilgepsLookup({
+        status: 'error',
+        message: 'PhilGEPS unavailable - enter manually.',
+      });
+    }
+  };
+
+  const philgepsChip = useMemo(() => {
+    if (philgepsLookup.status === 'found' && philgepsLookup.merchant) {
+      const m = philgepsLookup.merchant;
+      return {
+        cls: 'text-emerald-700',
+        text: `✓ ${m.name} · ${m.status} · ${m.activity}`,
+        title: `Ref ${m.refNumber || '—'} · RED approved ${m.redApprovalDate || '—'} · issued ${m.issuedDate || '—'} · expires ${m.expiresDate || '—'}`,
+      };
+    }
+    if (philgepsLookup.status === 'not_found') {
+      return {
+        cls: 'text-slate-500',
+        text: 'No exact PhilGEPS match',
+        title: philgepsLookup.nearNames?.length
+          ? `Closest matches: ${philgepsLookup.nearNames.join('; ')}`
+          : undefined,
+      };
+    }
+    if (philgepsLookup.status === 'error') {
+      return {
+        cls: 'text-amber-700',
+        text: philgepsLookup.message || 'PhilGEPS unavailable - enter manually.',
+        title: undefined,
+      };
+    }
+    return null;
+  }, [philgepsLookup]);
 
   const resetRowForNext = useCallback(
     (justPostedCheck: string, justPostedDv: string, justPostedSeq: number) => {
@@ -630,6 +709,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setAttributes(defaultAttributes());
       setRemarks('complete');
       setProcurement({});
+      setPhilgepsLookup({ status: 'idle' });
       setDateReceived('');
       setOrNoDate('');
       setAsaNo('');
@@ -2640,14 +2720,33 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     </datalist>
                   </div>
                   <div>
-                    <label className="block text-[10px] text-slate-500 mb-0.5">4. PhilGEPS / Date</label>
+                    <div className="flex items-center justify-between gap-1 mb-0.5">
+                      <label className="block text-[10px] text-slate-500">4. PhilGEPS / Date</label>
+                      <button
+                        type="button"
+                        onClick={() => void handlePhilGepsLookup()}
+                        disabled={philgepsLookup.status === 'loading'}
+                        title="Look up the payee in the PhilGEPS registered-merchants registry"
+                        className="text-[10px] font-medium text-blue-700 hover:text-blue-800 hover:underline disabled:text-slate-400 disabled:no-underline disabled:cursor-wait cursor-pointer whitespace-nowrap"
+                      >
+                        {philgepsLookup.status === 'loading' ? 'Checking…' : 'Verify PhilGEPS'}
+                      </button>
+                    </div>
                     <input
                       type="text"
                       value={procurement.philgepsDate || ''}
                       onChange={(e) => setProcurement((p) => ({ ...p, philgepsDate: e.target.value }))}
-                      placeholder="Ref # / 01-03-26"
+                      placeholder="Ref # / 01-03-2026"
                       className="w-full h-7 px-2 text-xs border border-slate-200 rounded bg-slate-50"
                     />
+                    {philgepsChip && (
+                      <p
+                        className={`mt-0.5 text-[10px] leading-tight truncate ${philgepsChip.cls}`}
+                        title={philgepsChip.title}
+                      >
+                        {philgepsChip.text}
+                      </p>
+                    )}
                   </div>
                   <div>
                     <label className="block text-[10px] text-slate-500 mb-0.5">
