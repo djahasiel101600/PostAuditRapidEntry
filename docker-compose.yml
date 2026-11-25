@@ -10,7 +10,10 @@
 #
 # Usage:
 #   copy deploy/.env.example deploy/.env  (fill in the values)
-#   docker compose --env-file deploy/.env up -d --build
+#   SQLite (default):  docker compose --env-file deploy/.env up -d --build
+#   PostgreSQL:        docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#                        --env-file deploy/.env up -d --build
+#   External Postgres: set RCI_DATABASE_URL in deploy/.env and use the default command.
 
 name: rci
 

@@ -1,0 +1,43 @@
+# RCI Rapid Ledger — PostgreSQL override.
+#
+# Layer this on top of docker-compose.yml to run the API against a bundled
+# PostgreSQL container instead of the default SQLite volume. No host ports
+# are published; the database is reachable only on rci-internal.
+#
+# Usage:
+#   docker compose -f docker-compose.yml -f docker-compose.postgres.yml \
+#     --env-file deploy/.env up -d --build
+#
+# Requires RCI_DB_PASSWORD in deploy/.env (URL-safe characters recommended).
+
+services:
+  rci-db:
+    image: postgres:16-alpine
+    container_name: rci-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: rci
+      POSTGRES_USER: rci
+      POSTGRES_PASSWORD: ${RCI_DB_PASSWORD:?Set RCI_DB_PASSWORD in deploy/.env}
+    volumes:
+      - rci-pgdata:/var/lib/postgresql/data
+    networks:
+      - rci-internal
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rci -d rci"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+
+  rci-api:
+    environment:
+      DATABASE_URL: postgresql://rci:${RCI_DB_PASSWORD:?Set RCI_DB_PASSWORD in deploy/.env}@rci-db:5432/rci
+    depends_on:
+      rci-db:
+        condition: service_healthy
+
+volumes:
+  # Named explicitly (like rci-data) so it is stable across project dirs.
+  rci-pgdata:
+    name: rci-pgdata
