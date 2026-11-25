@@ -43,8 +43,8 @@ from .services import (
 
 # Field allowlists ported from firestore.rules transaction update branches
 TX_AUDIT_FIELDS = {
-    'attributes', 'remarks', 'status', 'clerkReviewStatus', 'documentaryStatus',
-    'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate',
+    'attributes', 'dvSignatories', 'testOfControls', 'remarks', 'status', 'clerkReviewStatus',
+    'documentaryStatus', 'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate',
 }
 TX_FULL_EDIT_FIELDS = {
     'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo', 'dateReceived',
@@ -53,7 +53,8 @@ TX_FULL_EDIT_FIELDS = {
     'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',
     'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',
     'amountModelVersion', 'legacySnapshot', 'templateId', 'journalLines',
-    'isBalanced', 'attributes', 'procurement', 'remarks', 'status', 'submittedToCoaDate',
+    'isBalanced', 'attributes', 'dvSignatories', 'procurement', 'testOfControls', 'remarks',
+    'status', 'submittedToCoaDate',
 }
 WORKSPACE_EDIT_FIELDS = {
     'name', 'agencyCode', 'fiscalYear', 'defaultCheckPrefix', 'defaultDvPrefix', 'coaInitialized',

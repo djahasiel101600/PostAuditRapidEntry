@@ -184,6 +184,78 @@ class TransactionRuleTests(WorkspaceTestBase):
             response.data['authorizedUids'], ['uid-admin', 'uid-auditor', 'uid-encoder']
         )
 
+    def test_dv_signatories_and_test_of_controls_roundtrip(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(
+            self.workspace.id,
+            dvSignatories={'a': 'ok', 'b': 'exclamation', 'c': 'na'},
+            testOfControls={'status': 'suspended', 'particulars': 'DV 2026-01-0001 — awaiting OR copy.'},
+        )
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['dvSignatories']['b'], 'exclamation')
+        self.assertEqual(response.data['testOfControls']['status'], 'suspended')
+
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertEqual(stored.dvSignatories, {'a': 'ok', 'b': 'exclamation', 'c': 'na'})
+        self.assertEqual(stored.testOfControls['particulars'], 'DV 2026-01-0001 — awaiting OR copy.')
+
+    def test_invalid_test_of_controls_status_rejected(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(
+            self.workspace.id, testOfControls={'status': 'maybe', 'particulars': 'x'}
+        )
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_invalid_dv_signatories_rejected(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(self.workspace.id, dvSignatories={'a': 'ok', 'd': 'ok'})
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        bad_state = tx_payload(self.workspace.id, 'tx-2', dvSignatories={'a': 'flag'})
+        response = self.client.post(self.tx_url, bad_state, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_auditor_can_set_test_of_controls_on_audited_record(self):
+        self.as_user(self.encoder)
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'status': 'audited', 'clerkReviewStatus': 'audited'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        toc = {
+            'status': 'disallowed',
+            'particulars': '#1 · DV 2026-01-0001 · Check/ADA 3967001 · ₱95.00',
+        }
+        response = self.client.patch(self.tx_url + 'tx-1/', {'testOfControls': toc}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['testOfControls']['status'], 'disallowed')
+
+        # Clearing via null is accepted (JSONField null=True); the nulled field
+        # is then omitted from output by optional_empty_fields.
+        response = self.client.patch(self.tx_url + 'tx-1/', {'testOfControls': None}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertNotIn('testOfControls', response.data)
+        self.assertIsNone(Transaction.objects.get(pk='tx-1').testOfControls)
+
+        # Encoders cannot touch audited records at all, Test of Controls included
+        self.as_user(self.encoder)
+        response = self.client.patch(self.tx_url + 'tx-1/', {'testOfControls': toc}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Admins share the auditor branch and can also set Test of Controls
+        self.as_user(self.admin)
+        response = self.client.patch(self.tx_url + 'tx-1/', {'testOfControls': toc}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['testOfControls']['status'], 'disallowed')
+
 
 class CoaAndTaxPresetTests(WorkspaceTestBase):
     def test_coa_account_class_validation(self):

@@ -5,6 +5,7 @@ import {
   type ClerkReviewStatus,
   type CoaAccount,
   type DocumentaryVerificationStatus,
+  type DvSignatoriesMap,
   type EntryTemplate,
   type GrossBasisOverride,
   type JournalLine,
@@ -17,11 +18,14 @@ import {
   type TaxRulePreset,
   type TaxVerificationComponent,
   type TaxVerificationStatus,
+  type TestOfControlsRecord,
+  type TestOfControlsStatus,
   type TransactionRecord,
   type TransactionStatus,
   type VerificationAuditCategory,
   type VerificationAuditEvent,
 } from '../types/rci';
+import { readPair } from './slashPair';
 
 export function round2(value: number): number {
   if (!Number.isFinite(value)) return 0;
@@ -30,11 +34,104 @@ export function round2(value: number): number {
 
 export function applyTaxRounding(value: number, method: TaxRoundingMethod = 'half_up_2dp'): number {
   if (!Number.isFinite(value)) return 0;
+  const sign = value < 0 ? -1 : 1;
+  const absCents = Math.abs(value) * 100;
   if (method === 'truncate_2dp') {
-    const sign = value < 0 ? -1 : 1;
-    return (sign * Math.floor(Math.abs(value) * 100 + 1e-9)) / 100;
+    return (sign * Math.trunc(absCents + 1e-6)) / 100;
   }
-  return round2(value);
+  return (sign * Math.round(absCents + 1e-6)) / 100;
+}
+
+/** Tax on an integer-centavos base, returned in centavos (no float drift). */
+export function applyTaxToCents(
+  baseCents: number,
+  rate: number,
+  method: TaxRoundingMethod = 'half_up_2dp',
+): number {
+  const safeRate = Math.min(1, Math.max(0, Number(rate) || 0));
+  const rawCents = Math.abs(Number(baseCents) || 0) * safeRate;
+  if (!Number.isFinite(rawCents)) return 0;
+  if (method === 'truncate_2dp') return Math.trunc(rawCents + 1e-6);
+  return Math.round(rawCents + 1e-6);
+}
+
+/**
+ * Derive the expected tax base for a rule from the JEV gross:
+ * VAT-inclusive rules strip the 12% VAT (÷ 1.12); direct-gross rules use it as-is.
+ */
+export function deriveBaseForRule(
+  baseType: TaxBaseType,
+  jevGross: number,
+): number | null {
+  const gross = Number(jevGross);
+  if (!Number.isFinite(gross) || gross <= 0) return null;
+  if (baseType === 'gross_inclusive_vat' || baseType === 'vatable_sales') {
+    return round2(gross / 1.12);
+  }
+  if (baseType === 'gross_total') return round2(gross);
+  return null;
+}
+
+/** Human-readable formula for a component card tooltip. */
+export function describeTaxComputation(
+  comp: Pick<
+    TaxVerificationComponent,
+    'taxBaseType' | 'taxBaseAmount' | 'applicableRate' | 'roundingMethod'
+  >,
+  jevGross?: number,
+): string {
+  const methodLabel =
+    comp.roundingMethod === 'truncate_2dp' ? 'Truncate 2dp' : 'Half-Up 2dp';
+  const rate = Math.min(1, Math.max(0, Number(comp.applicableRate) || 0));
+  const ratePct = round2(rate * 100);
+  const typedBase =
+    comp.taxBaseAmount !== null &&
+    comp.taxBaseAmount !== undefined &&
+    Number.isFinite(Number(comp.taxBaseAmount))
+      ? round2(Number(comp.taxBaseAmount))
+      : null;
+  const effectiveBase =
+    typedBase ?? (Number(jevGross) > 0 ? deriveBaseForRule(comp.taxBaseType, Number(jevGross)) : null);
+  if (effectiveBase === null) {
+    return `Enter Base₱ · × ${ratePct}% (${methodLabel})`;
+  }
+  const expected = applyTaxRounding(effectiveBase * rate, comp.roundingMethod);
+  const baseText =
+    (comp.taxBaseType === 'gross_inclusive_vat' || comp.taxBaseType === 'vatable_sales') &&
+    Number(jevGross) > 0
+      ? `₱${formatPeso(Number(jevGross))} ÷ 1.12 = ₱${formatPeso(effectiveBase)}`
+      : `₱${formatPeso(effectiveBase)}`;
+  return `${baseText} × ${ratePct}% = ₱${formatPeso(expected)} (${methodLabel})`;
+}
+
+/** Map a BIR account title (e.g. "Due to BIR - 5%") to the matching rule preset id. */
+export function suggestPresetIdForBirTitle(title: string): string | null {
+  const text = String(title || '');
+  const mapping: Array<[string, string]> = [
+    ['5%', 'trp-vat5-vatable-sales'],
+    ['3%', 'trp-pt3-direct'],
+    ['2%', 'trp-ewt2-vat-excl'],
+    ['1%', 'trp-ewt1-vat-excl'],
+  ];
+  for (const [needle, presetId] of mapping) {
+    if (text.includes(needle)) return presetId;
+  }
+  return null;
+}
+
+/** Advisory warning when a direct-gross rule is paired with a VAT-stripped base. */
+export function describeBaseRuleWarning(
+  comp: Pick<TaxVerificationComponent, 'taxBaseType' | 'taxBaseAmount'>,
+  jevGross: number,
+): string | null {
+  if (comp.taxBaseType !== 'gross_total') return null;
+  const base = comp.taxBaseAmount;
+  if (base === null || base === undefined || !Number.isFinite(Number(base))) return null;
+  if (!Number.isFinite(Number(jevGross)) || Number(jevGross) <= 0) return null;
+  if (Number(base) < Number(jevGross) - 0.01) {
+    return 'Direct-gross rule expects Base ≈ JEV Gross; current base looks VAT-stripped (÷1.12?).';
+  }
+  return null;
 }
 
 export function formatPeso(value: number): string {
@@ -782,7 +879,7 @@ export function evaluateTaxVerification(params: {
       rate === 0
         ? 0
         : hasBase
-          ? applyTaxRounding(Number(comp.taxBaseAmount) * rate, comp.roundingMethod)
+          ? applyTaxToCents(Math.round(Number(comp.taxBaseAmount) * 100), rate, comp.roundingMethod) / 100
           : 0;
 
     // Resolve target JEV BIR credit line without reusing already exhausted credits
@@ -1064,10 +1161,19 @@ export function sanitizeProcurement(proc?: ProcurementMeta): ProcurementMeta | u
   if (!proc) return undefined;
   const cleaned: ProcurementMeta = {};
   if (proc.poSubmittedToCoaDate?.trim()) cleaned.poSubmittedToCoaDate = proc.poSubmittedToCoaDate.trim().slice(0, 30);
-  if (proc.poNoDate?.trim()) cleaned.poNoDate = proc.poNoDate.trim().slice(0, 50);
+
+  // Split "No / Date" pairs; legacy combined strings are parsed but never written back.
+  const poPair = readPair(proc.poNo, proc.poDate, proc.poNoDate);
+  if (poPair.left) cleaned.poNo = poPair.left.slice(0, 60);
+  if (poPair.right) cleaned.poDate = poPair.right.slice(0, 20);
+
   if (proc.procurementMethod?.trim()) cleaned.procurementMethod = proc.procurementMethod.trim().slice(0, 60);
   if (proc.philgepsDate?.trim()) cleaned.philgepsDate = proc.philgepsDate.trim().slice(0, 40);
-  if (proc.prNoDate?.trim()) cleaned.prNoDate = proc.prNoDate.trim().slice(0, 50);
+
+  const prPair = readPair(proc.prNo, proc.prDate, proc.prNoDate);
+  if (prPair.left) cleaned.prNo = prPair.left.slice(0, 60);
+  if (prPair.right) cleaned.prDate = prPair.right.slice(0, 20);
+
   if (proc.abstractDate?.trim()) cleaned.abstractDate = proc.abstractDate.trim().slice(0, 50);
   if (proc.rfqStatus && ['3plus', 'under3', 'na'].includes(proc.rfqStatus)) {
     cleaned.rfqStatus = proc.rfqStatus;
@@ -1077,8 +1183,40 @@ export function sanitizeProcurement(proc?: ProcurementMeta): ProcurementMeta | u
   } else if (proc.rfqCount?.trim()) {
     cleaned.rfqCount = proc.rfqCount.trim().slice(0, 20);
   }
-  if (proc.iarDate?.trim()) cleaned.iarDate = proc.iarDate.trim().slice(0, 40);
+  if (proc.iarNo?.trim()) cleaned.iarNo = proc.iarNo.trim().slice(0, 60);
+  if (proc.iarDate?.trim()) cleaned.iarDate = proc.iarDate.trim().slice(0, 20);
   if (proc.orInvoiceRef?.trim()) cleaned.orInvoiceRef = proc.orInvoiceRef.trim().slice(0, 80);
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+export function defaultDvSignatories(): DvSignatoriesMap {
+  return { a: 'ok', b: 'ok', c: 'ok' };
+}
+
+export function sanitizeDvSignatories(input?: DvSignatoriesMap | null): DvSignatoriesMap | undefined {
+  if (!input) return undefined;
+  const cleaned: DvSignatoriesMap = {};
+  (['a', 'b', 'c'] as const).forEach((key) => {
+    const raw = input[key];
+    if (raw === undefined || raw === null) return;
+    cleaned[key] = normalizeAttributeState(raw);
+  });
+  return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+const TEST_OF_CONTROLS_STATUSES: TestOfControlsStatus[] = ['allowed', 'suspended', 'disallowed'];
+
+export function sanitizeTestOfControls(
+  input?: TestOfControlsRecord | null,
+): TestOfControlsRecord | undefined {
+  if (!input) return undefined;
+  const cleaned: TestOfControlsRecord = {};
+  if (input.status && TEST_OF_CONTROLS_STATUSES.includes(input.status)) {
+    cleaned.status = input.status;
+  }
+  if (typeof input.particulars === 'string' && input.particulars.trim()) {
+    cleaned.particulars = input.particulars.trim().slice(0, 2000);
+  }
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
@@ -1153,7 +1291,7 @@ export function sanitizeTaxComponents(
       c.taxBaseAmount !== undefined && c.taxBaseAmount !== null && Number.isFinite(Number(c.taxBaseAmount))
         ? round2(Math.max(0, Number(c.taxBaseAmount)))
         : null;
-    const expected = baseAmount !== null ? applyTaxRounding(baseAmount * rate, rounding) : 0;
+    const expected = baseAmount !== null ? applyTaxToCents(Math.round(baseAmount * 100), rate, rounding) / 100 : 0;
     const actual = round2(Math.max(0, Number(c.actualWithholding) || 0));
     const cleaned: TaxVerificationComponent = {
       id: cleanString(c.id, 64) || `tax-${Date.now().toString(36)}`,

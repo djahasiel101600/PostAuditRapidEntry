@@ -28,8 +28,10 @@ import {
   isLegacyTransaction,
   round2,
   sanitizeJournalLines,
+  sanitizeDvSignatories,
   sanitizeProcurement,
   sanitizeTaxComponents,
+  sanitizeTestOfControls,
   sanitizeVerificationAuditTrail,
 } from '../lib/taxAndLedger';
 import {
@@ -38,6 +40,7 @@ import {
   type ClerkReviewStatus,
   type CoaAccount,
   type DocumentaryVerificationStatus,
+  type DvSignatoriesMap,
   type EntryTemplate,
   type GrossBasisOverride,
   type JournalLine,
@@ -49,6 +52,7 @@ import {
   type TaxRulePreset,
   type TaxVerificationComponent,
   type TaxVerificationStatus,
+  type TestOfControlsRecord,
   type TransactionRecord,
   type TransactionStatus,
   type UserWorkspaceLink,
@@ -90,7 +94,9 @@ export interface CreateTransactionInput {
   templateId?: string;
   journalLines: JournalLine[];
   attributes?: AuditAttributesMap;
+  dvSignatories?: DvSignatoriesMap;
   procurement?: ProcurementMeta;
+  testOfControls?: TestOfControlsRecord;
   remarks?: string;
   forceDraft?: boolean;
   submittedToCoaDate?: string;
@@ -761,7 +767,15 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       if (input.asaNo?.trim()) payload.asaNo = cleanString(input.asaNo, 40);
       if (input.jevNoDate?.trim()) payload.jevNoDate = cleanString(input.jevNoDate, 50);
       if (input.templateId?.trim()) payload.templateId = cleanString(input.templateId, 128);
+      if (input.dvSignatories) {
+        const dvSig = sanitizeDvSignatories(input.dvSignatories);
+        if (dvSig) payload.dvSignatories = dvSig;
+      }
       if (proc) payload.procurement = proc;
+      if (input.testOfControls) {
+        const toc = sanitizeTestOfControls(input.testOfControls);
+        if (toc) payload.testOfControls = toc;
+      }
       if (input.remarks?.trim()) payload.remarks = cleanString(input.remarks, 800);
       if (input.submittedToCoaDate?.trim()) {
         payload.submittedToCoaDate = cleanString(input.submittedToCoaDate, 20);
@@ -870,9 +884,15 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         cleanPatch.isBalanced = patch.isBalanced;
       }
       if (patch.attributes !== undefined) cleanPatch.attributes = patch.attributes;
+      if (patch.dvSignatories !== undefined) {
+        cleanPatch.dvSignatories = sanitizeDvSignatories(patch.dvSignatories) ?? null;
+      }
       if (patch.procurement !== undefined) {
         const proc = sanitizeProcurement(patch.procurement);
         if (proc) cleanPatch.procurement = proc;
+      }
+      if (patch.testOfControls !== undefined) {
+        cleanPatch.testOfControls = sanitizeTestOfControls(patch.testOfControls) ?? null;
       }
       if (patch.remarks !== undefined) cleanPatch.remarks = cleanString(patch.remarks, 800);
       if (patch.status !== undefined) cleanPatch.status = patch.status;

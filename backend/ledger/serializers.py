@@ -26,6 +26,9 @@ MONTHS = [
     'July', 'August', 'September', 'October', 'November', 'December',
 ]
 ATTRIBUTE_STATES = ['ok', 'flag', 'exclamation', 'wrong', 'na']
+DV_SIGNATORY_KEYS = {'a', 'b', 'c'}
+DV_SIGNATORY_STATES = ['ok', 'exclamation', 'wrong', 'na']
+TEST_OF_CONTROLS_STATUSES = ['allowed', 'suspended', 'disallowed']
 ACCOUNT_ROLES = [
     'settlement_debit', 'unrelated_debit', 'withholding_tax', 'retention_payable',
     'other_deduction', 'cash_bank_payment', 'other_liability', 'other_credit', 'unclassified',
@@ -165,7 +168,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
         'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'rciAmount', 'declaredJevGross',
         'grossBasisOverride', 'mathStatus', 'taxStatus', 'documentaryStatus',
         'clerkReviewStatus', 'amountModelVersion', 'legacySnapshot', 'templateId',
-        'procurement', 'remarks', 'submittedToCoaDate',
+        'dvSignatories', 'procurement', 'testOfControls', 'remarks', 'submittedToCoaDate',
     )
 
     class Meta:
@@ -176,8 +179,9 @@ class TransactionSerializer(WorkspaceRecordSerializer):
             'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
             'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus', 'documentaryStatus',
             'clerkReviewStatus', 'verificationAuditTrail', 'amountModelVersion', 'legacySnapshot',
-            'templateId', 'journalLines', 'isBalanced', 'attributes', 'procurement', 'remarks',
-            'status', 'submittedToCoaDate', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt',
+            'templateId', 'journalLines', 'isBalanced', 'attributes', 'dvSignatories', 'procurement',
+            'testOfControls', 'remarks', 'status', 'submittedToCoaDate', 'authorizedUids',
+            'createdByUid', 'createdAt', 'updatedAt',
         ]
         read_only_fields = ['createdAt', 'updatedAt']
 
@@ -206,6 +210,33 @@ class TransactionSerializer(WorkspaceRecordSerializer):
             raise serializers.ValidationError('attributes must contain exactly a1..a7.')
         if any(v not in ATTRIBUTE_STATES for v in value.values()):
             raise serializers.ValidationError('Invalid attribute state.')
+        return value
+
+    def validate_dvSignatories(self, value):
+        if value in (None, ''):
+            return value
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('dvSignatories must be an object.')
+        if not set(value.keys()) <= DV_SIGNATORY_KEYS:
+            raise serializers.ValidationError('dvSignatories keys must be a subset of a/b/c.')
+        if any(v not in DV_SIGNATORY_STATES for v in value.values()):
+            raise serializers.ValidationError('Invalid dvSignatories state.')
+        return value
+
+    def validate_testOfControls(self, value):
+        if value in (None, ''):
+            return value
+        if not isinstance(value, dict):
+            raise serializers.ValidationError('testOfControls must be an object.')
+        if not set(value.keys()) <= {'status', 'particulars'}:
+            raise serializers.ValidationError('testOfControls keys must be status/particulars.')
+        if 'status' in value and value['status'] not in TEST_OF_CONTROLS_STATUSES:
+            raise serializers.ValidationError('Invalid testOfControls status.')
+        if 'particulars' in value:
+            if not isinstance(value['particulars'], str):
+                raise serializers.ValidationError('particulars must be a string.')
+            if len(value['particulars']) > 2000:
+                raise serializers.ValidationError('particulars must be at most 2000 characters.')
         return value
 
     def validate_journalLines(self, value):

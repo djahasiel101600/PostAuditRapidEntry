@@ -68,6 +68,30 @@ export const AUDIT_ATTRIBUTE_LABELS: Array<{
   },
 ];
 
+export interface DvSignatoriesMap {
+  a?: AuditAttributeState;
+  b?: AuditAttributeState;
+  c?: AuditAttributeState;
+}
+
+export const DV_SIGNATORY_LABELS: Array<{
+  key: keyof DvSignatoriesMap;
+  letter: string;
+  label: string;
+}> = [
+  { key: 'a', letter: 'A', label: 'DV Box A — Certified: expenses necessary/lawful, funds available' },
+  {
+    key: 'b',
+    letter: 'B',
+    label: 'DV Box B — Certified: supporting documents complete and proper',
+  },
+  {
+    key: 'c',
+    letter: 'C',
+    label: 'DV Box C — Approved by Agency Head / authorized representative',
+  },
+];
+
 export type DebitAccountRole = 'settlement_debit' | 'unrelated_debit';
 
 export type CreditAccountRole =
@@ -111,15 +135,29 @@ export type RfqStatus = '3plus' | 'under3' | 'na';
 
 export interface ProcurementMeta {
   poSubmittedToCoaDate?: string;
+  /** @deprecated legacy combined "No / Date" string — read-only fallback for pre-split records */
   poNoDate?: string;
+  poNo?: string;
+  poDate?: string;
   procurementMethod?: string;
   philgepsDate?: string;
+  /** @deprecated legacy combined "No / Date" string — read-only fallback for pre-split records */
   prNoDate?: string;
+  prNo?: string;
+  prDate?: string;
   abstractDate?: string;
   rfqCount?: string;
   rfqStatus?: RfqStatus;
+  iarNo?: string;
   iarDate?: string;
   orInvoiceRef?: string;
+}
+
+export type TestOfControlsStatus = 'allowed' | 'suspended' | 'disallowed';
+
+export interface TestOfControlsRecord {
+  status?: TestOfControlsStatus;
+  particulars?: string;
 }
 
 export type TransactionStatus = 'draft' | 'posted' | 'lacking' | 'audited';
@@ -289,6 +327,8 @@ export interface TransactionRecord {
   isBalanced: boolean;
   attributes: AuditAttributesMap;
   procurement?: ProcurementMeta;
+  dvSignatories?: DvSignatoriesMap;
+  testOfControls?: TestOfControlsRecord;
   remarks?: string;
   status: TransactionStatus;
   submittedToCoaDate?: string;

@@ -3,6 +3,8 @@ import {
   AlertCircle,
   AlertTriangle,
   Check,
+  ChevronDown,
+  ChevronRight,
   ClipboardPaste,
   Copy,
   FileSpreadsheet,
@@ -16,6 +18,8 @@ import {
 } from 'lucide-react';
 import { AuditAttributeCell } from './AuditAttributeCell';
 import { CoaAccountPicker } from './CoaAccountPicker';
+import { SlashPairInput } from './SlashPairInput';
+import { readPair } from '../lib/slashPair';
 import { useAuthWorkspace, type CreateTransactionInput } from '../contexts/AuthWorkspaceContext';
 import {
   buildBatchDraftTransactionInput,
@@ -25,7 +29,7 @@ import {
   parseDelimitedRow,
 } from '../lib/batchImportParser';
 import {
-  applyTaxRounding,
+  applyTaxToCents,
   buildLinesFromTemplate,
   calculateTaxSplit,
   computeBalanceSummary,
@@ -34,7 +38,11 @@ import {
   countFlaggedAttributes,
   createVerificationAuditEvent,
   defaultAttributes,
+  defaultDvSignatories,
+  deriveBaseForRule,
   deriveClerkReviewStatus,
+  describeBaseRuleWarning,
+  describeTaxComputation,
   evaluateDocumentaryStatus,
   evaluateTaxVerification,
   formatPeso,
@@ -46,6 +54,8 @@ import {
   round2,
   sanitizeTaxComponents,
   sanitizeVerificationAuditTrail,
+  suggestPresetIdForBirTitle,
+  type ClassifiedJournalLine,
 } from '../lib/taxAndLedger';
 import {
   formatPhilGepsDate,
@@ -55,10 +65,12 @@ import {
 import {
   ACCOUNT_ROLE_LABELS,
   AUDIT_ATTRIBUTE_LABELS,
+  DV_SIGNATORY_LABELS,
   MONTHS,
   type AccountRole,
   type AuditAttributesMap,
   type ClerkReviewStatus,
+  type DvSignatoriesMap,
   type EntryTemplate,
   type GrossBasisOverride,
   type JournalLine,
@@ -338,8 +350,15 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [upgradingLegacy, setUpgradingLegacy] = useState<boolean>(false);
   const [showAuditTrail, setShowAuditTrail] = useState<boolean>(false);
   const [showTaxComponents, setShowTaxComponents] = useState<boolean>(true);
+  const [evidenceOverride, setEvidenceOverride] = useState<{
+    compId: string;
+    reason: string;
+  } | null>(null);
+  const [expandedCompDetails, setExpandedCompDetails] = useState<Record<string, boolean>>({});
+  const pendingFocusCompId = useRef<string | null>(null);
 
   const [attributes, setAttributes] = useState<AuditAttributesMap>(defaultAttributes());
+  const [dvSignatories, setDvSignatories] = useState<DvSignatoriesMap>(defaultDvSignatories());
   const [remarks, setRemarks] = useState<string>('complete');
   const [procurement, setProcurement] = useState<ProcurementMeta>({});
   const [showProcurement, setShowProcurement] = useState<boolean>(false);
@@ -422,6 +441,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setClerkReviewStatus('pending_review');
     setVerificationAuditTrail([]);
     setAttributes(defaultAttributes());
+    setDvSignatories(defaultDvSignatories());
     setRemarks('complete');
     setProcurement({});
     setPhilgepsLookup({ status: 'idle' });
@@ -472,8 +492,23 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     );
     setVerificationAuditTrail(editingTx.verificationAuditTrail || []);
     setAttributes(editingTx.attributes);
+    setDvSignatories(editingTx.dvSignatories || defaultDvSignatories());
     setRemarks(editingTx.remarks || '');
-    setProcurement(editingTx.procurement || {});
+    const loadedProc = editingTx.procurement || {};
+    if (loadedProc.poNoDate || loadedProc.prNoDate) {
+      // Auto-split legacy combined "No / Date" strings so the slash inputs display them.
+      const poPair = readPair(loadedProc.poNo, loadedProc.poDate, loadedProc.poNoDate);
+      const prPair = readPair(loadedProc.prNo, loadedProc.prDate, loadedProc.prNoDate);
+      setProcurement({
+        ...loadedProc,
+        poNo: poPair.left,
+        poDate: poPair.right,
+        prNo: prPair.left,
+        prDate: prPair.right,
+      });
+    } else {
+      setProcurement(loadedProc);
+    }
     setPhilgepsLookup({ status: 'idle' });
     setShowProcurement(
       Boolean(editingTx.procurement && Object.keys(editingTx.procurement).length > 0),
@@ -501,6 +536,19 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         coaAccounts,
       }),
     [parsedRciAmount, parsedDeclaredJevGross, grossBasisOverride, journalLines, coaAccounts],
+  );
+
+  const effectiveJevGross =
+    reconciliationSummary.reconciliationGrossAmount !== null
+      ? reconciliationSummary.reconciliationGrossAmount
+      : parsedDeclaredJevGross;
+
+  const withholdingLinesInJev = useMemo(
+    () =>
+      reconciliationSummary.classifiedLines.filter(
+        (l) => l.resolvedRole === 'withholding_tax' && l.credit > 0,
+      ),
+    [reconciliationSummary.classifiedLines],
   );
 
   const taxEvaluation = useMemo(
@@ -707,6 +755,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setClerkReviewStatus('pending_review');
       setVerificationAuditTrail([]);
       setAttributes(defaultAttributes());
+      setDvSignatories(defaultDvSignatories());
       setRemarks('complete');
       setProcurement({});
       setPhilgepsLookup({ status: 'idle' });
@@ -818,6 +867,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               journalLines,
               isBalanced: balanceSummary.isBalanced,
               attributes,
+              dvSignatories,
               procurement: showProcurement ? procurement : undefined,
               remarks,
               status: nextStatus,
@@ -861,6 +911,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               journalLines,
               isBalanced: balanceSummary.isBalanced,
               attributes,
+              dvSignatories,
               procurement: showProcurement ? procurement : undefined,
               remarks,
               status: nextStatus,
@@ -935,6 +986,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             templateId: selectedTemplateId || undefined,
             journalLines,
             attributes,
+            dvSignatories,
             procurement: showProcurement ? procurement : undefined,
             remarks,
             forceDraft,
@@ -1311,55 +1363,87 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     });
   };
 
-  const handleAddTaxComponent = (birLineIdx?: number) => {
-    const withholdingLines = reconciliationSummary.classifiedLines.filter(
-      (l) => l.resolvedRole === 'withholding_tax' && l.credit > 0,
-    );
-    const targetLine =
-      birLineIdx !== undefined
-        ? withholdingLines.find((l) => l.lineIndex === birLineIdx)
-        : withholdingLines.find(
-            (l) => !taxComponents.some((c) => c.birLineIndex === l.lineIndex),
-          ) || withholdingLines[0];
-
+  const buildComponentForLine = (line?: ClassifiedJournalLine): TaxVerificationComponent => {
+    const suggestedId = line ? suggestPresetIdForBirTitle(line.accountTitle) : null;
     const matchingPreset =
-      taxPresets.find((p) =>
-        targetLine?.accountTitle.includes('5%')
-          ? p.id === 'trp-vat5-vatable-sales'
-          : targetLine?.accountTitle.includes('2%')
-            ? p.id === 'trp-ewt2-vat-excl'
-            : targetLine?.accountTitle.includes('3%')
-              ? p.id === 'trp-pt3-direct'
-              : targetLine?.accountTitle.includes('1%')
-                ? p.id === 'trp-ewt1-vat-excl'
-                : false,
-      ) || taxPresets[0];
-
-    const newComp: TaxVerificationComponent = {
+      (suggestedId ? taxPresets.find((p) => p.id === suggestedId) : undefined) || taxPresets[0];
+    const rate = matchingPreset?.rate ?? 0.05;
+    const roundingMethod = matchingPreset?.roundingMethod || 'half_up_2dp';
+    const derivedBase = matchingPreset
+      ? deriveBaseForRule(matchingPreset.defaultTaxBaseType, effectiveJevGross)
+      : null;
+    const expected =
+      derivedBase !== null
+        ? applyTaxToCents(Math.round(derivedBase * 100), rate, roundingMethod) / 100
+        : 0;
+    const actual = line ? round2(line.credit) : 0;
+    return {
       id: `tvc-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}`,
-      birLineIndex: targetLine?.lineIndex,
-      birAccountCode: targetLine?.accountCode || matchingPreset?.defaultBirAccountCode || '20201010',
-      birAccountTitle: targetLine?.accountTitle || matchingPreset?.defaultBirAccountTitle || 'Due to BIR - 5%',
+      birLineIndex: line?.lineIndex,
+      birAccountCode: line?.accountCode || matchingPreset?.defaultBirAccountCode || '20201010',
+      birAccountTitle:
+        line?.accountTitle || matchingPreset?.defaultBirAccountTitle || 'Due to BIR - 5%',
       taxClassification: matchingPreset?.applicableClassification || 'Creditable Withholding Tax',
-      applicableRate: matchingPreset?.rate ?? 0.05,
+      applicableRate: rate,
       supportingDocRef: procurement.orInvoiceRef || orNoDate || '',
       hasCompleteEvidence: Boolean(procurement.orInvoiceRef || orNoDate),
       classificationUncertain: false,
       taxBaseType: matchingPreset?.defaultTaxBaseType || 'vatable_sales',
-      taxBaseAmount: null,
+      taxBaseAmount: derivedBase,
       rulePresetId: matchingPreset?.id,
       ruleVersion: matchingPreset?.version || '2026.1',
       ruleEffectiveDate: matchingPreset?.effectiveFrom || '2026-01-01',
       birReference: matchingPreset?.birReference || '',
-      roundingMethod: matchingPreset?.roundingMethod || 'half_up_2dp',
+      roundingMethod,
       computationRule: matchingPreset?.computationRule || 'Tax Base × Rate',
-      expectedWithholding: 0,
-      actualWithholding: targetLine ? round2(targetLine.credit) : 0,
-      difference: targetLine ? round2(targetLine.credit) : 0,
+      expectedWithholding: expected,
+      actualWithholding: actual,
+      difference: round2(actual - expected),
     };
+  };
+
+  const handleAddTaxComponent = (birLineIdx?: number) => {
+    const targetLine =
+      birLineIdx !== undefined
+        ? withholdingLinesInJev.find((l) => l.lineIndex === birLineIdx)
+        : withholdingLinesInJev.find(
+            (l) => !taxComponents.some((c) => c.birLineIndex === l.lineIndex),
+          ) || withholdingLinesInJev[0];
+    const newComp = buildComponentForLine(targetLine);
+    pendingFocusCompId.current = newComp.id;
     setTaxComponents((prev) => [...prev, newComp]);
     setTaxExplicitNotApplicable(false);
   };
+
+  const unmatchedWithholdingLines = useMemo(
+    () =>
+      withholdingLinesInJev.filter(
+        (l) => !taxComponents.some((c) => c.birLineIndex === l.lineIndex),
+      ),
+    [withholdingLinesInJev, taxComponents],
+  );
+
+  const handleScaffoldTaxComponents = () => {
+    if (unmatchedWithholdingLines.length === 0) return;
+    const created = unmatchedWithholdingLines.map((line) => buildComponentForLine(line));
+    setTaxComponents((prev) => [...prev, ...created]);
+    setTaxExplicitNotApplicable(false);
+  };
+
+  const addTaxComponentRef = useRef<() => void>(() => {});
+  useEffect(() => {
+    addTaxComponentRef.current = () => handleAddTaxComponent();
+  });
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.altKey && !e.ctrlKey && !e.metaKey && e.key.toLowerCase() === 'n') {
+        e.preventDefault();
+        addTaxComponentRef.current();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, []);
 
   const updateTaxComponent = (
     compId: string,
@@ -1376,7 +1460,11 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             : null;
         const expected =
           baseAmt !== null && baseAmt > 0
-            ? applyTaxRounding(baseAmt * (Number(merged.applicableRate) || 0), merged.roundingMethod)
+            ? applyTaxToCents(
+                Math.round(baseAmt * 100),
+                Number(merged.applicableRate) || 0,
+                merged.roundingMethod,
+              ) / 100
             : 0;
         merged.expectedWithholding = expected;
         merged.difference = round2((Number(merged.actualWithholding) || 0) - expected);
@@ -1400,6 +1488,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   };
 
   const attrCounts = useMemo(() => countAttributesByType(attributes), [attributes]);
+  const dvFlaggedCount = DV_SIGNATORY_LABELS.reduce(
+    (acc, sig) =>
+      dvSignatories[sig.key] === 'exclamation' || dvSignatories[sig.key] === 'wrong'
+        ? acc + 1
+        : acc,
+    0,
+  );
 
   const filteredTableRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -1415,13 +1510,141 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
 
   const activeFlagCount = countFlaggedAttributes(attributes);
 
-  const withholdingLinesInJev = useMemo(
-    () =>
-      reconciliationSummary.classifiedLines.filter(
-        (l) => l.resolvedRole === 'withholding_tax' && l.credit > 0,
-      ),
-    [reconciliationSummary.classifiedLines],
+  const coveredBirLineCount = new Set(
+    taxEvaluation.components
+      .filter((c) => (c.birLineIndex ?? -1) >= 0 && (Number(c.actualWithholding) || 0) > 0.01)
+      .map((c) => c.birLineIndex),
+  ).size;
+  const netTaxDelta = round2(
+    taxEvaluation.totalAllocatedActualTax - taxEvaluation.totalExpectedTax,
   );
+
+  const describeTemplateMismatch = (comp: TaxVerificationComponent): string | null => {
+    const mode = activeTemplate?.taxMode;
+    if (!mode || mode === 'none' || mode === 'custom') return null;
+    const templateIsVat = mode.startsWith('vat5');
+    const templateIsNonVat = mode.startsWith('pt3') || mode.startsWith('ewt');
+    const presetId = comp.rulePresetId || '';
+    const isVatRule = presetId.startsWith('trp-vat5');
+    const isDirectRule = presetId.endsWith('-direct') || comp.taxBaseType === 'gross_total';
+    if (isVatRule && templateIsNonVat) {
+      return 'VAT-type rule paired with a non-VAT template tax mode.';
+    }
+    if (isDirectRule && templateIsVat) {
+      return 'Direct-gross rule paired with a VAT template tax mode.';
+    }
+    return null;
+  };
+
+  const handleRulePresetChange = (comp: TaxVerificationComponent, presetId: string) => {
+    const preset = taxPresets.find((p) => p.id === presetId);
+    if (!preset) return;
+    const derived = deriveBaseForRule(preset.defaultTaxBaseType, effectiveJevGross);
+    const previousBase = comp.taxBaseAmount;
+    const patch: Partial<TaxVerificationComponent> = {
+      rulePresetId: preset.id,
+      ruleVersion: preset.version,
+      ruleEffectiveDate: preset.effectiveFrom,
+      birReference: preset.birReference,
+      taxClassification: preset.applicableClassification,
+      applicableRate: preset.rate,
+      taxBaseType: preset.defaultTaxBaseType,
+      roundingMethod: preset.roundingMethod,
+      computationRule: preset.computationRule,
+    };
+    if (derived !== null) patch.taxBaseAmount = derived;
+
+    const rateToken = `${Math.round(Number(preset.rate) * 100)}%`;
+    const otherTargets = new Set(
+      taxComponents.filter((c) => c.id !== comp.id).map((c) => c.birLineIndex),
+    );
+    const matchingLine =
+      withholdingLinesInJev.find(
+        (l) => l.accountTitle.includes(rateToken) && !otherTargets.has(l.lineIndex),
+      ) || withholdingLinesInJev.find((l) => l.accountTitle.includes(rateToken));
+    const linkedLine = withholdingLinesInJev.find((l) => l.lineIndex === comp.birLineIndex);
+    if (matchingLine) {
+      patch.birLineIndex = matchingLine.lineIndex;
+      patch.birAccountCode = matchingLine.accountCode || comp.birAccountCode;
+      patch.birAccountTitle = matchingLine.accountTitle;
+      patch.actualWithholding = round2(matchingLine.credit);
+    } else if (linkedLine && !linkedLine.accountTitle.includes(rateToken)) {
+      patch.birLineIndex = undefined;
+    }
+
+    updateTaxComponent(comp.id, patch);
+    if (
+      derived !== null &&
+      previousBase !== null &&
+      previousBase !== undefined &&
+      Number.isFinite(Number(previousBase)) &&
+      Number(previousBase) > 0 &&
+      Math.abs(Number(previousBase) - derived) > 0.005
+    ) {
+      appendAuditEvent(
+        'tax_rule_override',
+        `Rule changed to ${preset.name} — base re-derived from JEV Gross`,
+        {
+          targetRef: comp.id,
+          previousValue: `₱${formatPeso(Number(previousBase))}`,
+          newValue: `₱${formatPeso(derived)}`,
+        },
+      );
+    }
+  };
+
+  const applyFieldToRemaining = (
+    compId: string,
+    field: 'taxBaseAmount' | 'supportingDocRef',
+  ) => {
+    const source = taxComponents.find((c) => c.id === compId);
+    if (!source) return;
+    const sourceValue = source[field];
+    setTaxComponents((prev) =>
+      prev.map((c) => {
+        if (c.id === compId) return c;
+        if (field === 'taxBaseAmount') {
+          if (
+            c.taxBaseAmount !== null &&
+            c.taxBaseAmount !== undefined &&
+            Number(c.taxBaseAmount) > 0
+          ) {
+            return c;
+          }
+          const nextBase = Number(sourceValue);
+          if (!Number.isFinite(nextBase) || nextBase <= 0) return c;
+          const nextExpected =
+            applyTaxToCents(
+              Math.round(nextBase * 100),
+              Number(c.applicableRate) || 0,
+              c.roundingMethod,
+            ) / 100;
+          return {
+            ...c,
+            taxBaseAmount: nextBase,
+            expectedWithholding: nextExpected,
+            difference: round2((Number(c.actualWithholding) || 0) - nextExpected),
+          };
+        }
+        const nextRef = String(sourceValue || '').trim();
+        if (!nextRef || c.supportingDocRef.trim()) return c;
+        return { ...c, supportingDocRef: nextRef };
+      }),
+    );
+  };
+
+  const confirmEvidenceOverride = (
+    comp: Pick<TaxVerificationComponent, 'id' | 'difference'>,
+  ) => {
+    const reason = (evidenceOverride?.reason || '').trim();
+    if (reason.length < 3) return;
+    updateTaxComponent(
+      comp.id,
+      { hasCompleteEvidence: true },
+      `Evidence OK despite Δ ₱${formatPeso(Number(comp.difference) || 0)} — ${reason}`,
+    );
+    setEvidenceOverride(null);
+  };
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -1820,6 +2043,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     <th className="py-2 px-3 w-24">Date</th>
                     <th className="py-2 px-3 w-28">Serial/Check</th>
                     <th className="py-2 px-3 w-28">DV/Payroll</th>
+                    <th className="py-2 px-3 w-24">DV Sig.</th>
                     <th className="py-2 px-3">Payee</th>
                     <th className="py-2 px-3">Nature of Transaction</th>
                     <th className="py-2 px-3 text-right w-28">RCI Net</th>
@@ -1871,6 +2095,22 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                         </td>
                         <td className="px-3 font-mono tabular-nums text-slate-700 whitespace-nowrap">
                           {tx.dvNo}
+                        </td>
+                        <td className="px-3 whitespace-nowrap">
+                          <div className="flex items-center gap-0.5 w-[78px]">
+                            {DV_SIGNATORY_LABELS.map((sig) => (
+                              <div key={sig.key} className="flex-1 min-w-0">
+                                <AuditAttributeCell
+                                  num={0}
+                                  label={sig.label}
+                                  value={tx.dvSignatories?.[sig.key] || 'ok'}
+                                  onChange={() => {}}
+                                  compact
+                                  disabled
+                                />
+                              </div>
+                            ))}
+                          </div>
                         </td>
                         <td className="px-3 font-medium text-slate-900 max-w-[160px] truncate">
                           {tx.payeeName}
@@ -2392,9 +2632,21 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     <span>Exempt / N/A</span>
                   </label>
                 )}
+                {unmatchedWithholdingLines.length > 0 && (
+                  <button
+                    type="button"
+                    onClick={handleScaffoldTaxComponents}
+                    title="Create one component per unmatched Due to BIR line"
+                    className="inline-flex items-center gap-1 text-[11px] font-medium text-emerald-700 hover:underline cursor-pointer"
+                  >
+                    <Plus className="w-3 h-3" />
+                    <span>Scaffold BIR lines ({unmatchedWithholdingLines.length})</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={() => handleAddTaxComponent()}
+                  title="Add component (Alt+N)"
                   className="inline-flex items-center gap-1 text-[11px] font-medium text-blue-700 hover:underline cursor-pointer"
                 >
                   <Plus className="w-3 h-3" />
@@ -2405,6 +2657,51 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
 
             {showTaxComponents && (
               <div className="space-y-2">
+                <div className="grid grid-cols-4 gap-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-[10px] font-mono tabular-nums text-right">
+                  <div>
+                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                      Expected
+                    </div>
+                    <div className="text-slate-700">
+                      ₱{formatPeso(taxEvaluation.totalExpectedTax)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                      Actual
+                    </div>
+                    <div className="text-slate-700">
+                      ₱{formatPeso(taxEvaluation.totalAllocatedActualTax)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">Net Δ</div>
+                    <div
+                      className={
+                        Math.abs(netTaxDelta) > 0.01
+                          ? 'text-red-600 font-semibold'
+                          : 'text-emerald-700 font-semibold'
+                      }
+                    >
+                      ₱{formatPeso(netTaxDelta)}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                      BIR lines
+                    </div>
+                    <div className="text-slate-700">
+                      {coveredBirLineCount}/{taxEvaluation.withholdingLineCount}
+                      {taxEvaluation.unallocatedBirCredit > 0.01 && (
+                        <span className="text-amber-700">
+                          {' '}
+                          · ₱{formatPeso(taxEvaluation.unallocatedBirCredit)} uncovered
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
                 {taxEvaluation.doubleCountingConflict && (
                   <div className="p-2 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">
                     Double-counting conflict detected across BIR withholding tax lines. Adjust allocated JEV line or amounts.
@@ -2424,198 +2721,319 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                       : 'No tax verification components configured.'}
                   </p>
                 ) : (
-                  taxEvaluation.components.map((comp) => (
-                    <div
-                      key={comp.id}
-                      className="p-2 bg-slate-50 border border-slate-200 rounded space-y-1.5 text-[11px]"
-                    >
-                      <div className="flex items-center justify-between gap-1.5">
-                        <select
-                          value={comp.rulePresetId || ''}
-                          onChange={(e) => {
-                            const preset = taxPresets.find((p) => p.id === e.target.value);
-                            if (!preset) return;
-                            updateTaxComponent(comp.id, {
-                              rulePresetId: preset.id,
-                              ruleVersion: preset.version,
-                              ruleEffectiveDate: preset.effectiveFrom,
-                              birReference: preset.birReference,
-                              taxClassification: preset.applicableClassification,
-                              applicableRate: preset.rate,
-                              taxBaseType: preset.defaultTaxBaseType,
-                              roundingMethod: preset.roundingMethod,
-                              computationRule: preset.computationRule,
-                            });
-                          }}
-                          className="flex-1 h-7 px-1.5 text-[11px] bg-white border border-slate-200 rounded"
-                        >
-                          <option value="">Custom Rule...</option>
-                          {taxPresets.map((p) => (
-                            <option key={p.id} value={p.id}>
-                              {p.name} (v{p.version})
-                            </option>
-                          ))}
-                        </select>
-                        <button
-                          type="button"
-                          onClick={() =>
-                            setTaxComponents((prev) => prev.filter((c) => c.id !== comp.id))
-                          }
-                          title="Remove tax component"
-                          className="p-1 text-slate-400 hover:text-red-600 cursor-pointer"
-                        >
-                          <X className="w-3.5 h-3.5" />
-                        </button>
-                      </div>
-
-                      <div className="grid grid-cols-12 gap-1.5">
-                        <select
-                          aria-label="Target BIR JEV Line"
-                          value={comp.birLineIndex ?? ''}
-                          onChange={(e) => {
-                            const lineIdx =
-                              e.target.value === '' ? undefined : parseInt(e.target.value, 10);
-                            const target = withholdingLinesInJev.find(
-                              (l) => l.lineIndex === lineIdx,
-                            );
-                            updateTaxComponent(comp.id, {
-                              birLineIndex: lineIdx,
-                              birAccountCode: target?.accountCode || comp.birAccountCode,
-                              birAccountTitle: target?.accountTitle || comp.birAccountTitle,
-                              actualWithholding: target ? round2(target.credit) : comp.actualWithholding,
-                            });
-                          }}
-                          className="col-span-7 h-7 px-1.5 bg-white border border-slate-200 rounded text-[11px]"
-                        >
-                          <option value="">Auto-match BIR line...</option>
-                          {withholdingLinesInJev.map((l) => (
-                            <option key={l.lineIndex} value={l.lineIndex}>
-                              Line #{l.lineIndex + 1}: {l.accountTitle} (₱{formatPeso(l.credit)})
-                            </option>
-                          ))}
-                        </select>
-                        <div className="col-span-5 flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 h-7">
-                          <span className="text-[10px] text-slate-400">Rate%</span>
-                          <input
-                            type="number"
-                            step="0.1"
-                            min="0"
-                            max="100"
-                            value={round2(comp.applicableRate * 100)}
-                            onChange={(e) =>
-                              updateTaxComponent(
-                                comp.id,
-                                { applicableRate: Math.min(1, Math.max(0, (parseFloat(e.target.value) || 0) / 100)) },
-                                `Rate override to ${e.target.value}%`,
-                              )
-                            }
-                            className="w-full font-mono text-right bg-transparent focus:outline-none"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-12 gap-1.5">
-                        <select
-                          value={comp.taxBaseType}
-                          onChange={(e) =>
-                            updateTaxComponent(comp.id, {
-                              taxBaseType: e.target.value as TaxBaseType,
-                            })
-                          }
-                          className="col-span-7 h-7 px-1.5 bg-white border border-slate-200 rounded text-[11px]"
-                        >
-                          {Object.entries(TAX_BASE_TYPE_LABELS).map(([k, label]) => (
-                            <option key={k} value={k}>
-                              {label}
-                            </option>
-                          ))}
-                        </select>
-                        <div className="col-span-5 flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 h-7">
-                          <span className="text-[10px] text-slate-400">Base₱</span>
-                          <input
-                            type="number"
-                            step="0.01"
-                            min="0"
-                            value={comp.taxBaseAmount ?? ''}
-                            onChange={(e) =>
-                              updateTaxComponent(comp.id, {
-                                taxBaseAmount:
-                                  e.target.value === '' ? null : parseFloat(e.target.value) || 0,
-                              })
-                            }
-                            placeholder="0.00"
-                            className="w-full font-mono text-right bg-transparent focus:outline-none"
-                          />
-                        </div>
-                      </div>
-
-                      <div className="grid grid-cols-12 gap-1.5 items-center">
-                        <input
-                          type="text"
-                          value={comp.supportingDocRef}
-                          onChange={(e) =>
-                            updateTaxComponent(comp.id, { supportingDocRef: e.target.value })
-                          }
-                          placeholder="Invoice / BIR 2307 Ref..."
-                          className="col-span-7 h-7 px-1.5 bg-white border border-slate-200 rounded text-[11px]"
-                        />
-                        <select
-                          value={comp.roundingMethod}
-                          onChange={(e) =>
-                            updateTaxComponent(comp.id, {
-                              roundingMethod: e.target.value as TaxRoundingMethod,
-                            })
-                          }
-                          className="col-span-5 h-7 px-1 bg-white border border-slate-200 rounded text-[10px]"
-                        >
-                          <option value="half_up_2dp">Half-Up 2dp</option>
-                          <option value="truncate_2dp">Truncate 2dp</option>
-                        </select>
-                      </div>
-
-                      <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
-                        <div className="flex items-center gap-3">
-                          <label className="inline-flex items-center gap-1 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={comp.hasCompleteEvidence}
-                              onChange={(e) =>
-                                updateTaxComponent(comp.id, {
-                                  hasCompleteEvidence: e.target.checked,
-                                })
+                  taxEvaluation.components.map((comp) => {
+                    const statusTint =
+                      comp.status === 'variance' || comp.status === 'manual_review'
+                        ? 'border-red-200 bg-red-50/60'
+                        : comp.status === 'pending_base' ||
+                            comp.status === 'incomplete_evidence'
+                          ? 'border-amber-200 bg-amber-50/50'
+                          : 'border-slate-200 bg-slate-50';
+                    const baseWarning = describeBaseRuleWarning(comp, effectiveJevGross);
+                    const templateWarning = describeTemplateMismatch(comp);
+                    const detailsOpen = Boolean(expandedCompDetails[comp.id]);
+                    return (
+                      <div
+                        key={comp.id}
+                        className={`p-2 border rounded space-y-1.5 text-[11px] ${statusTint}`}
+                      >
+                        <div className="flex items-center gap-1">
+                          <select
+                            ref={(el) => {
+                              if (pendingFocusCompId.current === comp.id) {
+                                pendingFocusCompId.current = null;
+                                el?.focus();
                               }
-                            />
-                            <span>Evidence OK</span>
-                          </label>
-                          <label className="inline-flex items-center gap-1 cursor-pointer">
-                            <input
-                              type="checkbox"
-                              checked={Boolean(comp.classificationUncertain)}
-                              onChange={(e) =>
-                                updateTaxComponent(comp.id, {
-                                  classificationUncertain: e.target.checked,
-                                })
-                              }
-                            />
-                            <span>Uncertain</span>
-                          </label>
-                        </div>
-                        <div className="font-mono tabular-nums text-[10px]">
-                          Exp ₱{formatPeso(comp.expectedWithholding)} · Act ₱
-                          {formatPeso(comp.actualWithholding)} ·{' '}
-                          <span
-                            className={
-                              Math.abs(comp.difference) > 0.01
-                                ? 'text-red-600 font-semibold'
-                                : 'text-emerald-700 font-semibold'
-                            }
+                            }}
+                            value={comp.rulePresetId || ''}
+                            onChange={(e) => handleRulePresetChange(comp, e.target.value)}
+                            className="flex-1 h-7 px-1.5 text-[11px] bg-white border border-slate-200 rounded"
                           >
-                            Δ ₱{formatPeso(comp.difference)}
-                          </span>
+                            <option value="">Custom Rule...</option>
+                            {taxPresets.map((p) => (
+                              <option key={p.id} value={p.id}>
+                                {p.name} (v{p.version})
+                              </option>
+                            ))}
+                          </select>
+                          {(baseWarning || templateWarning) && (
+                            <span
+                              title={[baseWarning, templateWarning].filter(Boolean).join('\n')}
+                              className="inline-flex items-center justify-center w-4 h-4 rounded-full bg-amber-100 text-amber-700 border border-amber-300 text-[9px] font-bold cursor-help shrink-0"
+                            >
+                              !
+                            </span>
+                          )}
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setExpandedCompDetails((prev) => ({
+                                ...prev,
+                                [comp.id]: !detailsOpen,
+                              }))
+                            }
+                            title={detailsOpen ? 'Hide rule details' : 'Show rule details'}
+                            className="inline-flex items-center gap-0.5 px-1 h-7 text-[10px] text-slate-500 hover:text-slate-800 cursor-pointer shrink-0"
+                          >
+                            <span>Details</span>
+                            {detailsOpen ? (
+                              <ChevronDown className="w-3 h-3" />
+                            ) : (
+                              <ChevronRight className="w-3 h-3" />
+                            )}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setTaxComponents((prev) => prev.filter((c) => c.id !== comp.id))
+                            }
+                            title="Remove tax component"
+                            className="p-1 text-slate-400 hover:text-red-600 cursor-pointer shrink-0"
+                          >
+                            <X className="w-3.5 h-3.5" />
+                          </button>
+                        </div>
+
+                        <div className="grid grid-cols-12 gap-1.5">
+                          <select
+                            aria-label="Target BIR JEV Line"
+                            value={comp.birLineIndex ?? ''}
+                            onChange={(e) => {
+                              const lineIdx =
+                                e.target.value === '' ? undefined : parseInt(e.target.value, 10);
+                              const target = withholdingLinesInJev.find(
+                                (l) => l.lineIndex === lineIdx,
+                              );
+                              updateTaxComponent(comp.id, {
+                                birLineIndex: lineIdx,
+                                birAccountCode: target?.accountCode || comp.birAccountCode,
+                                birAccountTitle: target?.accountTitle || comp.birAccountTitle,
+                                actualWithholding: target
+                                  ? round2(target.credit)
+                                  : comp.actualWithholding,
+                              });
+                            }}
+                            className="col-span-8 h-7 px-1.5 bg-white border border-slate-200 rounded text-[11px]"
+                          >
+                            <option value="">Auto-match BIR line...</option>
+                            {withholdingLinesInJev.map((l) => (
+                              <option key={l.lineIndex} value={l.lineIndex}>
+                                Line #{l.lineIndex + 1}: {l.accountTitle} (₱{formatPeso(l.credit)})
+                              </option>
+                            ))}
+                          </select>
+                          <div className="col-span-4 flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 h-7">
+                            <span className="text-[10px] text-slate-400">Rate%</span>
+                            <input
+                              type="number"
+                              step="0.1"
+                              min="0"
+                              max="100"
+                              value={round2(comp.applicableRate * 100)}
+                              onChange={(e) =>
+                                updateTaxComponent(
+                                  comp.id,
+                                  {
+                                    applicableRate: Math.min(
+                                      1,
+                                      Math.max(0, (parseFloat(e.target.value) || 0) / 100),
+                                    ),
+                                  },
+                                  `Rate override to ${e.target.value}%`,
+                                )
+                              }
+                              className="w-full font-mono tabular-nums text-right bg-transparent focus:outline-none"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-12 gap-1.5">
+                          <div className="col-span-5 flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 h-7">
+                            <span className="text-[10px] text-slate-400">Base₱</span>
+                            <input
+                              type="number"
+                              step="0.01"
+                              min="0"
+                              value={comp.taxBaseAmount ?? ''}
+                              onChange={(e) =>
+                                updateTaxComponent(comp.id, {
+                                  taxBaseAmount:
+                                    e.target.value === ''
+                                      ? null
+                                      : parseFloat(e.target.value) || 0,
+                                })
+                              }
+                              placeholder="0.00"
+                              className="w-full font-mono tabular-nums text-right bg-transparent focus:outline-none"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyFieldToRemaining(comp.id, 'taxBaseAmount')}
+                              title="Apply to remaining rows"
+                              className="text-slate-300 hover:text-blue-600 cursor-pointer shrink-0"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                          </div>
+                          <div className="col-span-7 flex items-center gap-1 bg-white border border-slate-200 rounded px-1.5 h-7">
+                            <input
+                              type="text"
+                              value={comp.supportingDocRef}
+                              onChange={(e) =>
+                                updateTaxComponent(comp.id, {
+                                  supportingDocRef: e.target.value,
+                                })
+                              }
+                              placeholder="Invoice / BIR 2307 Ref..."
+                              className="w-full bg-transparent focus:outline-none text-[11px]"
+                            />
+                            <button
+                              type="button"
+                              onClick={() => applyFieldToRemaining(comp.id, 'supportingDocRef')}
+                              title="Apply to remaining rows"
+                              className="text-slate-300 hover:text-blue-600 cursor-pointer shrink-0"
+                            >
+                              <Copy className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {detailsOpen && (
+                          <div className="pt-1 border-t border-slate-200/70 space-y-1.5">
+                            <div className="grid grid-cols-12 gap-1.5">
+                              <select
+                                value={comp.taxBaseType}
+                                onChange={(e) =>
+                                  updateTaxComponent(comp.id, {
+                                    taxBaseType: e.target.value as TaxBaseType,
+                                  })
+                                }
+                                className="col-span-7 h-7 px-1.5 bg-white border border-slate-200 rounded text-[11px]"
+                              >
+                                {Object.entries(TAX_BASE_TYPE_LABELS).map(([k, label]) => (
+                                  <option key={k} value={k}>
+                                    {label}
+                                  </option>
+                                ))}
+                              </select>
+                              <select
+                                value={comp.roundingMethod}
+                                onChange={(e) =>
+                                  updateTaxComponent(comp.id, {
+                                    roundingMethod: e.target.value as TaxRoundingMethod,
+                                  })
+                                }
+                                className="col-span-5 h-7 px-1 bg-white border border-slate-200 rounded text-[10px]"
+                              >
+                                <option value="half_up_2dp">Half-Up 2dp</option>
+                                <option value="truncate_2dp">Truncate 2dp</option>
+                              </select>
+                            </div>
+                            <p className="text-[10px] text-slate-500 leading-snug">
+                              {describeTaxComputation(comp, effectiveJevGross)}
+                            </p>
+                            <p
+                              className="text-[10px] text-slate-400 truncate"
+                              title={`v${comp.ruleVersion || '—'} · effective ${
+                                comp.ruleEffectiveDate || '—'
+                              } · ${comp.birReference || 'No BIR ref'}`}
+                            >
+                              v{comp.ruleVersion || '—'} · effective{' '}
+                              {comp.ruleEffectiveDate || '—'} ·{' '}
+                              {comp.birReference || 'No BIR ref'}
+                            </p>
+                          </div>
+                        )}
+
+                        {evidenceOverride && evidenceOverride.compId === comp.id && (
+                          <div className="p-1.5 bg-amber-50 border border-amber-200 rounded space-y-1">
+                            <p className="text-[10px] font-medium text-amber-800">
+                              Δ ₱{formatPeso(comp.difference)} — reason required to mark Evidence
+                              OK
+                            </p>
+                            <div className="flex items-center gap-1">
+                              <input
+                                type="text"
+                                value={evidenceOverride.reason}
+                                onChange={(e) =>
+                                  setEvidenceOverride({
+                                    compId: comp.id,
+                                    reason: e.target.value,
+                                  })
+                                }
+                                placeholder="e.g. BIR 2307 variance verified against invoice"
+                                className="flex-1 h-6 px-1.5 bg-white border border-amber-200 rounded text-[10px]"
+                              />
+                              <button
+                                type="button"
+                                disabled={evidenceOverride.reason.trim().length < 3}
+                                onClick={() => confirmEvidenceOverride(comp)}
+                                className="h-6 px-2 text-[10px] font-medium bg-amber-600 text-white rounded disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+                              >
+                                Confirm
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setEvidenceOverride(null)}
+                                className="h-6 px-2 text-[10px] text-slate-600 bg-white border border-slate-200 rounded cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          </div>
+                        )}
+
+                        <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                          <div className="flex items-center gap-3">
+                            <label className="inline-flex items-center gap-1 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={comp.hasCompleteEvidence}
+                                onChange={(e) => {
+                                  if (e.target.checked && Math.abs(comp.difference) > 0.01) {
+                                    setEvidenceOverride({ compId: comp.id, reason: '' });
+                                    return;
+                                  }
+                                  if (!e.target.checked && evidenceOverride?.compId === comp.id) {
+                                    setEvidenceOverride(null);
+                                  }
+                                  updateTaxComponent(comp.id, {
+                                    hasCompleteEvidence: e.target.checked,
+                                  });
+                                }}
+                              />
+                              <span>Evidence OK</span>
+                            </label>
+                            <label className="inline-flex items-center gap-1 cursor-pointer">
+                              <input
+                                type="checkbox"
+                                checked={Boolean(comp.classificationUncertain)}
+                                onChange={(e) =>
+                                  updateTaxComponent(comp.id, {
+                                    classificationUncertain: e.target.checked,
+                                  })
+                                }
+                              />
+                              <span>Uncertain</span>
+                            </label>
+                          </div>
+                          <div className="font-mono tabular-nums text-[10px]">
+                            Exp ₱{formatPeso(comp.expectedWithholding)} · Act ₱
+                            {formatPeso(comp.actualWithholding)} ·{' '}
+                            <span
+                              className={
+                                Math.abs(comp.difference) > 0.01
+                                  ? 'text-red-600 font-semibold'
+                                  : 'text-emerald-700 font-semibold'
+                              }
+                            >
+                              Δ ₱{formatPeso(comp.difference)}
+                            </span>
+                          </div>
                         </div>
                       </div>
-                    </div>
-                  ))
+                    );
+                  })
                 )}
               </div>
             )}
@@ -2660,6 +3078,34 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             />
           </div>
 
+          {/* DV Signatories (A–C) */}
+          <div className="p-3 border-b border-slate-200">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-medium text-slate-700">DV Signatories (A–C)</span>
+              <span className="text-[11px] font-mono text-slate-500">
+                {dvFlaggedCount === 0 ? 'All boxes OK' : `${dvFlaggedCount} flagged`}
+              </span>
+            </div>
+            <div className="grid grid-cols-3 gap-1 mb-1.5">
+              {DV_SIGNATORY_LABELS.map((sig) => (
+                <AuditAttributeCell
+                  key={sig.key}
+                  num={0}
+                  prefix={sig.letter}
+                  label={sig.label}
+                  value={dvSignatories[sig.key] || 'ok'}
+                  disabled={editingTx?.status === 'audited' && activeRole === 'encoder'}
+                  onChange={(nextVal) =>
+                    setDvSignatories((prev) => ({ ...prev, [sig.key]: nextVal }))
+                  }
+                />
+              ))}
+            </div>
+            <p className="text-[10px] text-slate-400">
+              Click to cycle (✓ · ! · ✕ · N/A) · Filled by Clerk Processors on post-audit
+            </p>
+          </div>
+
           {/* Complete 9-Field Procurement / COA Trail */}
           <div className="p-3 border-b border-slate-200">
             <button
@@ -2688,12 +3134,15 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   </div>
                   <div>
                     <label className="block text-[10px] text-slate-500 mb-0.5">2. PO No. / Date</label>
-                    <input
-                      type="text"
-                      value={procurement.poNoDate || ''}
-                      onChange={(e) => setProcurement((p) => ({ ...p, poNoDate: e.target.value }))}
-                      placeholder={`PO-${fiscalYear}-014 / 01-05-${shortYear}`}
-                      className="w-full h-7 px-2 text-xs border border-slate-200 rounded bg-slate-50"
+                    <SlashPairInput
+                      leftValue={procurement.poNo ?? ''}
+                      rightValue={procurement.poDate ?? ''}
+                      onChange={(poNo, poDate) =>
+                        setProcurement((p) => ({ ...p, poNo, poDate }))
+                      }
+                      leftPlaceholder={`PO-${fiscalYear}-014`}
+                      rightPlaceholder={`01-05-${shortYear}`}
+                      ariaLabel="PO Number / Date"
                     />
                   </div>
                   <div>
@@ -2752,12 +3201,15 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     <label className="block text-[10px] text-slate-500 mb-0.5">
                       5. Purchase Request No / Date
                     </label>
-                    <input
-                      type="text"
-                      value={procurement.prNoDate || ''}
-                      onChange={(e) => setProcurement((p) => ({ ...p, prNoDate: e.target.value }))}
-                      placeholder={`PR-${fiscalYear}-009 / 01-02-${shortYear}`}
-                      className="w-full h-7 px-2 text-xs border border-slate-200 rounded bg-slate-50"
+                    <SlashPairInput
+                      leftValue={procurement.prNo ?? ''}
+                      rightValue={procurement.prDate ?? ''}
+                      onChange={(prNo, prDate) =>
+                        setProcurement((p) => ({ ...p, prNo, prDate }))
+                      }
+                      leftPlaceholder={`PR-${fiscalYear}-009`}
+                      rightPlaceholder={`01-02-${shortYear}`}
+                      ariaLabel="Purchase Request Number / Date"
                     />
                   </div>
                   <div>
@@ -2845,13 +3297,17 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                 <div className="grid grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[10px] text-slate-500 mb-0.5">
-                      8. Inspection &amp; Acceptance Report Date
+                      8. Inspection &amp; Acceptance Report / Date
                     </label>
-                    <input
-                      type="date"
-                      value={procurement.iarDate || ''}
-                      onChange={(e) => setProcurement((p) => ({ ...p, iarDate: e.target.value }))}
-                      className="w-full h-7 px-2 text-xs font-mono border border-slate-200 rounded bg-slate-50"
+                    <SlashPairInput
+                      leftValue={procurement.iarNo ?? ''}
+                      rightValue={procurement.iarDate ?? ''}
+                      onChange={(iarNo, iarDate) =>
+                        setProcurement((p) => ({ ...p, iarNo, iarDate }))
+                      }
+                      leftPlaceholder={`IAR-${fiscalYear}-003`}
+                      rightPlaceholder={`01-06-${shortYear}`}
+                      ariaLabel="Inspection & Acceptance Report Number / Date"
                     />
                   </div>
                   <div>

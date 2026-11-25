@@ -3,6 +3,7 @@ import { CheckCircle2, Download, Eye, EyeOff, Pencil, ShieldCheck } from 'lucide
 import { AuditAttributeCell } from './AuditAttributeCell';
 import { useAuthWorkspace } from '../contexts/AuthWorkspaceContext';
 import { exportWorkingPaperWorkbook } from '../lib/excelExport';
+import { renderSlashPair } from '../lib/slashPair';
 import {
   createVerificationAuditEvent,
   deriveClerkReviewStatus,
@@ -14,13 +15,34 @@ import {
 } from '../lib/taxAndLedger';
 import {
   AUDIT_ATTRIBUTE_LABELS,
+  DV_SIGNATORY_LABELS,
   MONTHS,
   type AuditAttributesMap,
   type AuditAttributeState,
+  type DvSignatoriesMap,
   type MonthName,
+  type TestOfControlsStatus,
   type TransactionRecord,
   type TransactionStatus,
 } from '../types/rci';
+
+const TOC_STATUS_LABELS: Record<TestOfControlsStatus, string> = {
+  allowed: 'Allowed',
+  suspended: 'Suspended',
+  disallowed: 'Disallowed',
+};
+
+const TOC_CHIP_CLS: Record<TestOfControlsStatus, string> = {
+  allowed: 'border-emerald-200 bg-emerald-50 text-emerald-700',
+  suspended: 'border-amber-300 bg-amber-50 text-amber-800',
+  disallowed: 'border-red-300 bg-red-50 text-red-700',
+};
+
+const TOC_BTN_ACTIVE: Record<TestOfControlsStatus, string> = {
+  allowed: 'border-emerald-600 bg-emerald-600 text-white',
+  suspended: 'border-amber-500 bg-amber-500 text-white',
+  disallowed: 'border-red-600 bg-red-600 text-white',
+};
 
 interface MonthlyLedgerViewProps {
   onEditInRapidEntry: (tx: TransactionRecord) => void;
@@ -42,6 +64,9 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
   const [searchQuery, setSearchQuery] = useState('');
   const [editingRemarksId, setEditingRemarksId] = useState<string | null>(null);
   const [remarksDraft, setRemarksDraft] = useState('');
+  const [editingTocId, setEditingTocId] = useState<string | null>(null);
+  const [tocStatusDraft, setTocStatusDraft] = useState<TestOfControlsStatus | ''>('');
+  const [tocParticularsDraft, setTocParticularsDraft] = useState('');
 
   const monthRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -104,6 +129,56 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
     }
   };
 
+  const handleChangeDvSignatory = async (
+    tx: TransactionRecord,
+    key: keyof DvSignatoriesMap,
+    nextVal: AuditAttributeState,
+  ) => {
+    if (tx.status === 'audited' && activeRole === 'encoder') return;
+    await updateTransaction(tx.id, {
+      dvSignatories: { ...(tx.dvSignatories || {}), [key]: nextVal },
+    });
+  };
+
+  // Admins and auditors both exercise audit controls (sign-off, ToC, audited-row edits).
+  const canAudit = activeRole === 'admin' || activeRole === 'auditor';
+
+  const buildTocRowReference = (tx: TransactionRecord) =>
+    `#${tx.sequenceNo} · DV ${tx.dvNo || '—'} · Check/ADA ${tx.adaCheckNo || '—'} · ₱${formatPeso(getDisplayRciNetAmount(tx))}`;
+
+  const openTocEditor = (tx: TransactionRecord) => {
+    if (!canAudit) return;
+    setEditingTocId(tx.id);
+    setTocStatusDraft(tx.testOfControls?.status || '');
+    setTocParticularsDraft(tx.testOfControls?.particulars || '');
+  };
+
+  const handleSaveTestOfControls = async (tx: TransactionRecord) => {
+    const particulars = tocParticularsDraft.trim();
+    const evt = createVerificationAuditEvent({
+      actorUid: user?.uid || 'system',
+      actorName: user?.displayName || user?.email || 'Auditor',
+      category: 'clerk_review_decision',
+      targetRef: tx.adaCheckNo,
+      previousValue: tx.testOfControls?.status || 'none',
+      newValue: tocStatusDraft || 'none',
+      reason: `Test of Controls: ${tocStatusDraft ? TOC_STATUS_LABELS[tocStatusDraft] : 'Cleared'}${
+        particulars ? ` — ${particulars.slice(0, 120)}` : ''
+      }`,
+    });
+    const trail = sanitizeVerificationAuditTrail([...(tx.verificationAuditTrail || []), evt]);
+    await updateTransaction(tx.id, {
+      testOfControls: {
+        status: tocStatusDraft || undefined,
+        particulars: particulars || undefined,
+      },
+      verificationAuditTrail: trail,
+    });
+    setEditingTocId(null);
+    setTocStatusDraft('');
+    setTocParticularsDraft('');
+  };
+
   const handleMarkAudited = async (tx: TransactionRecord) => {
     const nextStatus: TransactionStatus = tx.status === 'audited' ? 'posted' : 'audited';
     const nextClerk =
@@ -130,8 +205,6 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
       verificationAuditTrail: trail,
     });
   };
-
-  const canAudit = activeRole === 'admin' || activeRole === 'auditor';
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -251,6 +324,9 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                 <th className="py-2 px-2.5 border-r border-slate-200 text-center w-48">
                   Attributes (1–7 · ELAS)
                 </th>
+                <th className="py-2 px-2.5 border-r border-slate-200 text-center w-24">
+                  DV Sig. (A·B·C)
+                </th>
                 {showPurchases && (
                   <>
                     <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
@@ -275,13 +351,16 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                       RFQ (3)
                     </th>
                     <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
-                      IAR Date
+                      IAR / Date
                     </th>
                     <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
                       OR / Invoice No.
                     </th>
                   </>
                 )}
+                <th className="py-2 px-2.5 border-r border-slate-200 min-w-[200px]">
+                  Test of Controls
+                </th>
                 <th className="py-2 px-2.5 border-r border-slate-200 w-36">JEV No. &amp; Date</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 w-24">Acct Code</th>
                 <th className="py-2 px-2.5 border-r border-slate-200">Account Title</th>
@@ -379,6 +458,27 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               ))}
                             </div>
                           </td>
+                          <td
+                            rowSpan={rowSpan}
+                            className="py-2 px-2 border-r border-slate-200 align-top"
+                          >
+                            <div className="grid grid-cols-3 gap-0.5 w-24">
+                              {DV_SIGNATORY_LABELS.map((sig) => (
+                                <AuditAttributeCell
+                                  key={sig.key}
+                                  compact
+                                  num={0}
+                                  prefix={sig.letter}
+                                  label={sig.label}
+                                  value={tx.dvSignatories?.[sig.key] || 'ok'}
+                                  disabled={tx.status === 'audited' && activeRole === 'encoder'}
+                                  onChange={(nextVal) =>
+                                    void handleChangeDvSignatory(tx, sig.key, nextVal)
+                                  }
+                                />
+                              ))}
+                            </div>
+                          </td>
                           {showPurchases && (
                             <>
                               <td
@@ -391,7 +491,11 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 rowSpan={rowSpan}
                                 className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 text-slate-700 whitespace-nowrap"
                               >
-                                {tx.procurement?.poNoDate || '—'}
+                                {renderSlashPair(
+                                  tx.procurement?.poNo,
+                                  tx.procurement?.poDate,
+                                  tx.procurement?.poNoDate,
+                                ) || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
@@ -409,7 +513,11 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 rowSpan={rowSpan}
                                 className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
                               >
-                                {tx.procurement?.prNoDate || '—'}
+                                {renderSlashPair(
+                                  tx.procurement?.prNo,
+                                  tx.procurement?.prDate,
+                                  tx.procurement?.prNoDate,
+                                ) || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
@@ -440,7 +548,11 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 rowSpan={rowSpan}
                                 className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
                               >
-                                {tx.procurement?.iarDate || '—'}
+                                {renderSlashPair(
+                                  tx.procurement?.iarNo,
+                                  tx.procurement?.iarDate,
+                                  undefined,
+                                ) || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
@@ -450,6 +562,97 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               </td>
                             </>
                           )}
+                          <td
+                            rowSpan={rowSpan}
+                            className="py-2 px-2 border-r border-slate-200 align-top min-w-[200px]"
+                          >
+                            {editingTocId === tx.id ? (
+                              <div className="space-y-1">
+                                <div className="flex flex-wrap gap-1">
+                                  {(['allowed', 'suspended', 'disallowed'] as const).map((st) => (
+                                    <button
+                                      key={st}
+                                      type="button"
+                                      onClick={() => setTocStatusDraft(st)}
+                                      className={`px-1.5 py-0.5 text-[10px] rounded border capitalize cursor-pointer transition-colors ${
+                                        tocStatusDraft === st
+                                          ? TOC_BTN_ACTIVE[st]
+                                          : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100'
+                                      }`}
+                                    >
+                                      {st}
+                                    </button>
+                                  ))}
+                                </div>
+                                <textarea
+                                  rows={3}
+                                  maxLength={2000}
+                                  value={tocParticularsDraft}
+                                  onChange={(e) => setTocParticularsDraft(e.target.value)}
+                                  placeholder="Item/ref no. · Nature of expenditure · DV no. · Check/ADA no. · Amount examined"
+                                  className="w-full p-1.5 text-xs border border-blue-400 rounded bg-white"
+                                />
+                                <div className="flex flex-wrap items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setTocParticularsDraft((prev) => {
+                                        const ref = buildTocRowReference(tx);
+                                        return prev.trim()
+                                          ? `${prev.replace(/\s+$/, '')}\n${ref}`
+                                          : ref;
+                                      })
+                                    }
+                                    className="px-1.5 py-0.5 text-[10px] rounded border border-slate-200 text-slate-600 hover:bg-slate-100 cursor-pointer"
+                                  >
+                                    Insert row reference
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleSaveTestOfControls(tx)}
+                                    className="px-2 py-0.5 bg-slate-900 text-white text-[11px] rounded cursor-pointer"
+                                  >
+                                    Save
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setEditingTocId(null)}
+                                    className="px-2 py-0.5 text-slate-600 text-[11px] cursor-pointer"
+                                  >
+                                    Cancel
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div
+                                onClick={() => openTocEditor(tx)}
+                                title={
+                                  tx.testOfControls?.particulars ||
+                                  (canAudit ? 'Click to edit Test of Controls' : undefined)
+                                }
+                                className={`space-y-0.5 ${
+                                  canAudit ? 'cursor-pointer hover:opacity-80' : 'cursor-default'
+                                }`}
+                              >
+                                <span
+                                  className={`inline-flex items-center px-1.5 py-0.5 rounded border text-[10px] font-medium ${
+                                    tx.testOfControls?.status
+                                      ? TOC_CHIP_CLS[tx.testOfControls.status]
+                                      : 'border-slate-200 bg-slate-50 text-slate-400'
+                                  }`}
+                                >
+                                  {tx.testOfControls?.status
+                                    ? TOC_STATUS_LABELS[tx.testOfControls.status]
+                                    : '—'}
+                                </span>
+                                {tx.testOfControls?.particulars && (
+                                  <p className="text-[11px] text-slate-600 truncate max-w-[220px]">
+                                    {tx.testOfControls.particulars}
+                                  </p>
+                                )}
+                              </div>
+                            )}
+                          </td>
                           <td
                             rowSpan={rowSpan}
                             className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums text-[11px] text-slate-700"

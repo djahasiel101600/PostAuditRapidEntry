@@ -4,6 +4,7 @@ import {
   isLegacyTransaction,
   normalizeAttributeState,
 } from './taxAndLedger';
+import { renderSlashPair } from './slashPair';
 import type { AuditAttributeState, MonthName, ProcurementMeta, TransactionRecord } from '../types/rci';
 
 function attrSymbol(state: AuditAttributeState): string {
@@ -12,6 +13,12 @@ function attrSymbol(state: AuditAttributeState): string {
   if (norm === 'exclamation') return '!';
   if (norm === 'wrong') return '✕';
   return 'N/A';
+}
+
+function tocStatusLabel(tx: TransactionRecord): string {
+  const status = tx.testOfControls?.status;
+  if (!status) return '';
+  return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
 function rfqExportCell(proc?: ProcurementMeta): string {
@@ -63,15 +70,26 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Attr 5 (S)': isFirst ? attrSymbol(tx.attributes.a5) : '',
         'Attr 6': isFirst ? attrSymbol(tx.attributes.a6) : '',
         'Attr 7': isFirst ? attrSymbol(tx.attributes.a7) : '',
+        'DV Sig. A': isFirst ? attrSymbol(tx.dvSignatories?.a || 'ok') : '',
+        'DV Sig. B': isFirst ? attrSymbol(tx.dvSignatories?.b || 'ok') : '',
+        'DV Sig. C': isFirst ? attrSymbol(tx.dvSignatories?.c || 'ok') : '',
         'Date PO Submitted to COA': isFirst ? tx.procurement?.poSubmittedToCoaDate || '' : '',
-        'PO No. / Date': isFirst ? tx.procurement?.poNoDate || '' : '',
+        'PO No. / Date': isFirst
+          ? renderSlashPair(tx.procurement?.poNo, tx.procurement?.poDate, tx.procurement?.poNoDate)
+          : '',
         'Method of Procurement': isFirst ? tx.procurement?.procurementMethod || '' : '',
         'PhilGEPS / Date': isFirst ? tx.procurement?.philgepsDate || '' : '',
-        'Purchase Request No / Date': isFirst ? tx.procurement?.prNoDate || '' : '',
+        'Purchase Request No / Date': isFirst
+          ? renderSlashPair(tx.procurement?.prNo, tx.procurement?.prDate, tx.procurement?.prNoDate)
+          : '',
         'Abstract of Canvass / Date': isFirst ? tx.procurement?.abstractDate || '' : '',
         'RFQ (3)': isFirst ? rfqExportCell(tx.procurement) : '',
-        'Inspection & Acceptance Report Date': isFirst ? tx.procurement?.iarDate || '' : '',
+        'Inspection & Acceptance Report / Date': isFirst
+          ? renderSlashPair(tx.procurement?.iarNo, tx.procurement?.iarDate, undefined)
+          : '',
         'Official Receipts / Invoice No.': isFirst ? tx.procurement?.orInvoiceRef || '' : '',
+        'Test of Controls': isFirst ? tocStatusLabel(tx) : '',
+        'Test of Controls Particulars': isFirst ? tx.testOfControls?.particulars || '' : '',
         'JEV No. and Date': isFirst ? tx.jevNoDate || (hasJevLines ? '' : 'Pending JEV') : '',
         'Account Code': line.accountCode,
         'Account Title': line.accountTitle,

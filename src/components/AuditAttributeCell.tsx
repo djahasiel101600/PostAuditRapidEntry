@@ -10,6 +10,8 @@ interface AuditAttributeCellProps {
   onChange: (next: 'ok' | 'exclamation' | 'wrong' | 'na') => void;
   disabled?: boolean;
   compact?: boolean;
+  /** Override the numeric id shown in the button/title (e.g. "A" for DV boxes). */
+  prefix?: string;
 }
 
 const STATE_OPTIONS: Array<{
@@ -57,6 +59,7 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
   onChange,
   disabled = false,
   compact = false,
+  prefix,
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -91,7 +94,8 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
           ? 'bg-red-50 border-red-400 text-red-700 hover:bg-red-100'
           : 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-slate-200';
 
-  const prefixLabel = compact ? '' : shortTag ? `${num}${shortTag}` : `${num}`;
+  const idLabel = prefix ?? `${num}`;
+  const prefixLabel = compact ? '' : shortTag ? `${idLabel}${shortTag}` : idLabel;
   const displayGlyph = norm === 'na' ? (compact ? 'N/A' : '–') : currentMeta.glyph;
 
   return (
@@ -99,7 +103,7 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
       <button
         type="button"
         disabled={disabled}
-        title={`(${num}) ${label} · Status: ${currentMeta.title}\nClick to cycle · Right-click for menu`}
+        title={`(${idLabel}) ${label} · Status: ${currentMeta.title}\nClick to cycle · Right-click for menu`}
         onClick={() => {
           if (disabled) return;
           onChange(cycleAttributeState(norm));
@@ -121,7 +125,7 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
         <div className="fixed sm:absolute right-0 top-full mt-1 w-64 bg-white border border-slate-200 rounded-md shadow-lg z-50 p-2 text-left">
           <div className="pb-1.5 mb-1.5 border-b border-slate-100">
             <p className="text-[11px] font-semibold text-slate-900 leading-snug">
-              ({num}) {label}
+              ({idLabel}) {label}
             </p>
             <p className="text-[10px] text-slate-500 mt-0.5">Select control state</p>
           </div>

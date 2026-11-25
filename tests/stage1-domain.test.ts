@@ -7,19 +7,34 @@ import {
 } from '../src/lib/batchImportParser';
 import { buildWorkingPaperExportData } from '../src/lib/excelExport';
 import {
+  composeSlashPair,
+  normalizePairDate,
+  readPair,
+  splitSlashPair,
+} from '../src/lib/slashPair';
+import {
   applyTaxRounding,
+  applyTaxToCents,
   computeReconciliationSummary,
   createLegacySnapshot,
   createVerificationAuditEvent,
   DEFAULT_TAX_RULE_PRESETS,
   defaultAttributes,
+  defaultDvSignatories,
+  deriveBaseForRule,
   deriveClerkReviewStatus,
+  describeBaseRuleWarning,
+  describeTaxComputation,
   evaluateDocumentaryStatus,
   evaluateTaxVerification,
   isLegacyTransaction,
   resolveJournalLineRole,
+  sanitizeDvSignatories,
+  sanitizeProcurement,
+  sanitizeTestOfControls,
+  suggestPresetIdForBirTitle,
 } from '../src/lib/taxAndLedger';
-import type { CoaAccount, JournalLine, TaxVerificationComponent, TransactionRecord } from '../src/types/rci';
+import type { CoaAccount, DvSignatoriesMap, JournalLine, TaxVerificationComponent, TransactionRecord } from '../src/types/rci';
 
 const WORKSPACE_COA: CoaAccount[] = [
   { code: '50204020', title: 'Electricity Expenses', normalSide: 'debit', accountClass: 'settlement_debit' },
@@ -551,4 +566,187 @@ test('Legacy compatibility & snapshot protection plus Export & Documentary separ
   assert.equal(rciRows[1]['Math Reconciliation'], 'pending_jev');
   const draftWpRow = wpRows.find((r) => r['ADA/Check No'] === '3967118');
   assert.equal(draftWpRow?.['Account Title'], 'Pending JEV encoding');
+});
+
+test('deriveBaseForRule strips 12% VAT for VAT-inclusive rules and passes through direct gross', () => {
+  assert.equal(deriveBaseForRule('vatable_sales', 25600), 22857.14);
+  assert.equal(deriveBaseForRule('gross_inclusive_vat', 25600), 22857.14);
+  assert.equal(deriveBaseForRule('gross_total', 25600), 25600);
+  assert.equal(deriveBaseForRule('contract_or_custom', 25600), null);
+  assert.equal(deriveBaseForRule('exempt_excluded', 25600), null);
+  assert.equal(deriveBaseForRule('vatable_sales', 0), null);
+  assert.equal(deriveBaseForRule('gross_total', -50), null);
+  assert.equal(deriveBaseForRule('vatable_sales', Number.NaN), null);
+});
+
+test('Centavo-safe rounding: half-up vs truncate on tax edges', () => {
+  assert.equal(applyTaxRounding(1142.8571, 'half_up_2dp'), 1142.86);
+  assert.equal(applyTaxRounding(1142.8571, 'truncate_2dp'), 1142.85);
+  assert.equal(applyTaxRounding(22857.142857, 'half_up_2dp'), 22857.14);
+  assert.equal(applyTaxRounding(22857.142857, 'truncate_2dp'), 22857.14);
+  // Integer-centavo path: ₱22,857.14 × 5%
+  assert.equal(applyTaxToCents(2285714, 0.05, 'half_up_2dp'), 114286);
+  assert.equal(applyTaxToCents(2285714, 0.05, 'truncate_2dp'), 114285);
+  assert.equal(applyTaxToCents(2285714, 0.05) / 100, 1142.86);
+  assert.equal(applyTaxToCents(0, 0.05), 0);
+  assert.equal(applyTaxToCents(2285714, Number.NaN), 0);
+});
+
+test('describeTaxComputation renders human formula text for tooltips', () => {
+  const vatComponent = {
+    taxBaseType: 'gross_inclusive_vat' as const,
+    taxBaseAmount: null,
+    applicableRate: 0.05,
+    roundingMethod: 'half_up_2dp' as const,
+  };
+  assert.equal(
+    describeTaxComputation(vatComponent, 25600),
+    '₱25,600.00 ÷ 1.12 = ₱22,857.14 × 5% = ₱1,142.86 (Half-Up 2dp)',
+  );
+
+  const directComponent = {
+    taxBaseType: 'gross_total' as const,
+    taxBaseAmount: 25600,
+    applicableRate: 0.03,
+    roundingMethod: 'half_up_2dp' as const,
+  };
+  assert.equal(
+    describeTaxComputation(directComponent, 25600),
+    '₱25,600.00 × 3% = ₱768.00 (Half-Up 2dp)',
+  );
+
+  const emptyComponent = {
+    taxBaseType: 'vatable_sales' as const,
+    taxBaseAmount: null,
+    applicableRate: 0.05,
+    roundingMethod: 'half_up_2dp' as const,
+  };
+  assert.equal(describeTaxComputation(emptyComponent), 'Enter Base₱ · × 5% (Half-Up 2dp)');
+});
+
+test('suggestPresetIdForBirTitle maps BIR line rates to versioned rule presets', () => {
+  assert.equal(suggestPresetIdForBirTitle('Due to BIR - 5%'), 'trp-vat5-vatable-sales');
+  assert.equal(suggestPresetIdForBirTitle('Due to BIR - 3%'), 'trp-pt3-direct');
+  assert.equal(suggestPresetIdForBirTitle('Due to BIR - 2%'), 'trp-ewt2-vat-excl');
+  assert.equal(suggestPresetIdForBirTitle('Due to BIR - 1%'), 'trp-ewt1-vat-excl');
+  assert.equal(suggestPresetIdForBirTitle('Due to GSIS - Life & Retirement'), null);
+  assert.equal(suggestPresetIdForBirTitle(''), null);
+});
+
+test('describeBaseRuleWarning flags VAT-stripped bases on direct-gross rules only', () => {
+  assert.ok(describeBaseRuleWarning({ taxBaseType: 'gross_total', taxBaseAmount: 22857.14 }, 25600));
+  assert.equal(describeBaseRuleWarning({ taxBaseType: 'gross_total', taxBaseAmount: 25600 }, 25600), null);
+  assert.equal(describeBaseRuleWarning({ taxBaseType: 'gross_total', taxBaseAmount: null }, 25600), null);
+  assert.equal(describeBaseRuleWarning({ taxBaseType: 'vatable_sales', taxBaseAmount: 22857.14 }, 25600), null);
+  assert.equal(describeBaseRuleWarning({ taxBaseType: 'gross_total', taxBaseAmount: 22857.14 }, 0), null);
+});
+
+test('splitSlashPair splits at the separator before a date-like tail, falling back to the last slash', () => {
+  assert.deepEqual(splitSlashPair('PO-2026-014 / 01-05-2026'), {
+    left: 'PO-2026-014',
+    right: '01-05-2026',
+  });
+  assert.deepEqual(splitSlashPair('PO-2026-014/01-05-2026'), {
+    left: 'PO-2026-014',
+    right: '01-05-2026',
+  });
+  assert.deepEqual(splitSlashPair('PO-2026-014 / 1/5/2026'), {
+    left: 'PO-2026-014',
+    right: '1/5/2026',
+  });
+  assert.deepEqual(splitSlashPair('A/B-1/2'), { left: 'A/B-1', right: '2' });
+  assert.deepEqual(splitSlashPair('PO-2026-014'), { left: 'PO-2026-014', right: '' });
+  assert.deepEqual(splitSlashPair(''), { left: '', right: '' });
+  assert.deepEqual(splitSlashPair(undefined), { left: '', right: '' });
+});
+
+test('normalizePairDate accepts common date formats and preserves unparseable text', () => {
+  assert.deepEqual(normalizePairDate('1-5-2026'), { value: '01-05-2026', ok: true });
+  assert.deepEqual(normalizePairDate('01-05-2026'), { value: '01-05-2026', ok: true });
+  assert.deepEqual(normalizePairDate('1/5/2026'), { value: '01-05-2026', ok: true });
+  assert.deepEqual(normalizePairDate('2026-01-05'), { value: '01-05-2026', ok: true });
+  assert.deepEqual(normalizePairDate('01-05-26'), { value: '01-05-2026', ok: true });
+  assert.deepEqual(normalizePairDate(''), { value: '', ok: true });
+
+  const invalid = normalizePairDate('02-30-2026');
+  assert.equal(invalid.ok, false);
+  assert.equal(invalid.value, '02-30-2026');
+  const text = normalizePairDate('pending');
+  assert.equal(text.ok, false);
+  assert.equal(text.value, 'pending');
+});
+
+test('composeSlashPair and readPair rebuild the display string with legacy fallback', () => {
+  assert.equal(composeSlashPair('PO-1', '01-05-2026'), 'PO-1 / 01-05-2026');
+  assert.equal(composeSlashPair('PO-1', ''), 'PO-1');
+  assert.equal(composeSlashPair('', '01-05-2026'), '01-05-2026');
+  assert.equal(composeSlashPair('', ''), '');
+
+  assert.deepEqual(readPair('PO-9', '01-02-2026', 'ignored / 12-31-2025'), {
+    left: 'PO-9',
+    right: '01-02-2026',
+  });
+  assert.deepEqual(readPair(undefined, undefined, 'PR-1 / 01-02-2026'), {
+    left: 'PR-1',
+    right: '01-02-2026',
+  });
+  assert.deepEqual(readPair('', '', undefined), { left: '', right: '' });
+});
+
+test('sanitizeDvSignatories whitelists A/B/C keys and normalizes states', () => {
+  assert.deepEqual(defaultDvSignatories(), { a: 'ok', b: 'ok', c: 'ok' });
+  assert.deepEqual(sanitizeDvSignatories({ a: 'ok', b: 'exclamation', c: 'na' }), {
+    a: 'ok',
+    b: 'exclamation',
+    c: 'na',
+  });
+  assert.deepEqual(
+    sanitizeDvSignatories({ a: 'ok', d: 'ok' } as unknown as DvSignatoriesMap),
+    { a: 'ok' },
+  );
+  assert.deepEqual(
+    sanitizeDvSignatories({ a: 'flag', b: 'bogus' } as unknown as DvSignatoriesMap),
+    { a: 'exclamation', b: 'ok' },
+  );
+  assert.equal(sanitizeDvSignatories(undefined), undefined);
+  assert.equal(sanitizeDvSignatories({}), undefined);
+});
+
+test('sanitizeTestOfControls guards status and slices particulars to 2000 chars', () => {
+  assert.deepEqual(sanitizeTestOfControls({ status: 'suspended', particulars: '  DV #1 missing OR  ' }), {
+    status: 'suspended',
+    particulars: 'DV #1 missing OR',
+  });
+  assert.equal(sanitizeTestOfControls({ status: 'maybe' as never }), undefined);
+  assert.equal(sanitizeTestOfControls({ particulars: '   ' }), undefined);
+  const long = sanitizeTestOfControls({ particulars: 'x'.repeat(2500) });
+  assert.equal(long?.particulars?.length, 2000);
+});
+
+test('sanitizeProcurement splits legacy No / Date pairs into independent fields', () => {
+  const fromLegacy = sanitizeProcurement({
+    poNoDate: 'PO-1 / 01-05-2026',
+    prNoDate: 'PR-2 / 01-04-2026',
+  });
+  assert.deepEqual(fromLegacy, {
+    poNo: 'PO-1',
+    poDate: '01-05-2026',
+    prNo: 'PR-2',
+    prDate: '01-04-2026',
+  });
+  assert.equal(fromLegacy && 'poNoDate' in fromLegacy, false);
+  assert.equal(fromLegacy && 'prNoDate' in fromLegacy, false);
+
+  const fromSplit = sanitizeProcurement({
+    poNo: ' PO-9 ',
+    poDate: '02-03-2026',
+    iarNo: 'IAR-3',
+    iarDate: '01-06-2026',
+  });
+  assert.deepEqual(fromSplit, {
+    poNo: 'PO-9',
+    poDate: '02-03-2026',
+    iarNo: 'IAR-3',
+    iarDate: '01-06-2026',
+  });
 });
