@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for P0, P1, and P2 UI/UX and high-workload workflow optimizations across Rapid Entry, Drafts, Lacking Queue, Monthly Ledger, COA Schedule, Batch Paste, and Templates & Team, aligned with user preferences for a tabbed right inspector with pinned status strip, auto-loaded Drafts with auto-scaffolded Tax Verification Components, strict ELAS-only Lacking Queue Resolve gating, and client pagination + writeBatch throughput improvements.",
+  "updatedAt":  "2026-11-24T12:55:55.251362188Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

@@ -1,0 +1,744 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Pillar 1 / Global Safety Net: Default deny all access
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Core Primitives
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerified() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() > 0 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSuperAdmin() {
+      return isVerified() && request.auth.token.email == 'djahasiel101600@gmail.com';
+    }
+
+    function isWorkspaceMember(wsId) {
+      return isSignedIn() && exists(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid));
+    }
+
+    function getMemberRole(wsId) {
+      return get(/databases/$(database)/documents/workspaces/$(wsId)/members/$(request.auth.uid)).data.role;
+    }
+
+    function isWorkspaceAdmin(wsId) {
+      return isWorkspaceMember(wsId) && getMemberRole(wsId) == 'admin';
+    }
+
+    function isWorkspaceAuditorOrAdmin(wsId) {
+      return isWorkspaceMember(wsId) && (getMemberRole(wsId) == 'admin' || getMemberRole(wsId) == 'auditor');
+    }
+
+    function isValidBoundedUidList(listVal) {
+      return listVal is list && listVal.size() >= 1 && listVal.size() <= 20 && listVal[0] is string && listVal[0].size() <= 128;
+    }
+
+    // Connection health check document (non-sensitive)
+    match /test/connection {
+      allow get: if isSignedIn();
+    }
+
+    // Pillar 6: PII Isolation (User Private Profile)
+    match /users/{uid}/private/profile {
+      function isValidUserPrivateProfile(data) {
+        return data.keys().hasAll(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+          && data.keys().hasOnly(['uid', 'email', 'displayName', 'createdAt', 'updatedAt'])
+          && data.uid is string && data.uid == uid && isValidId(data.uid)
+          && data.email is string && data.email.size() > 0 && data.email.size() <= 254
+          && data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 120
+          && data.createdAt is timestamp
+          && data.updatedAt is timestamp;
+      }
+
+      allow get: if isSignedIn() && isValidId(uid) && request.auth.uid == uid;
+      allow create: if isVerified() && isValidId(uid) && request.auth.uid == uid
+        && isValidUserPrivateProfile(incoming())
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(uid) && request.auth.uid == uid
+        && isValidUserPrivateProfile(incoming())
+        && incoming().uid == existing().uid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && incoming().diff(existing()).affectedKeys().hasOnly(['email', 'displayName', 'updatedAt']);
+    }
+
+    // User Workspace Index (Zero get() inside allow list)
+    match /userWorkspaces/{linkId} {
+      function isValidUserWorkspaceLink(data) {
+        return data.keys().hasAll(['uid', 'workspaceId', 'workspaceName', 'role', 'joinedAt'])
+          && data.keys().hasOnly(['uid', 'workspaceId', 'workspaceName', 'role', 'joinedAt'])
+          && data.uid is string && isValidId(data.uid)
+          && data.workspaceId is string && isValidId(data.workspaceId)
+          && data.workspaceName is string && data.workspaceName.size() > 0 && data.workspaceName.size() <= 120
+          && data.role in ['admin', 'auditor', 'encoder']
+          && data.joinedAt is timestamp;
+      }
+
+      allow get: if isSignedIn() && isValidId(linkId) && existing().uid == request.auth.uid;
+      allow list: if isSignedIn() && existing().uid == request.auth.uid;
+      allow create: if isVerified() && isValidId(linkId)
+        && isValidUserWorkspaceLink(incoming())
+        && incoming().uid == request.auth.uid
+        && incoming().joinedAt == request.time
+        && (
+          existsAfter(/databases/$(database)/documents/workspaces/$(incoming().workspaceId)/members/$(request.auth.uid))
+          || isWorkspaceMember(incoming().workspaceId)
+        );
+      allow update: if isVerified() && isValidId(linkId)
+        && existing().uid == request.auth.uid
+        && isValidUserWorkspaceLink(incoming())
+        && incoming().uid == existing().uid
+        && incoming().workspaceId == existing().workspaceId
+        && incoming().role == existing().role
+        && incoming().joinedAt == existing().joinedAt
+        && incoming().diff(existing()).affectedKeys().hasOnly(['workspaceName']);
+      allow delete: if isVerified() && isValidId(linkId) && existing().uid == request.auth.uid;
+    }
+
+    // Workspaces
+    match /workspaces/{workspaceId} {
+      function isValidWorkspace(data) {
+        return data.keys().hasAll(['id', 'name', 'agencyCode', 'fiscalYear', 'ownerUid', 'memberUids', 'createdAt', 'updatedAt'])
+          && data.keys().hasOnly(['id', 'name', 'agencyCode', 'fiscalYear', 'ownerUid', 'memberUids', 'defaultCheckPrefix', 'defaultDvPrefix', 'coaInitialized', 'createdAt', 'updatedAt'])
+          && data.id is string && data.id == workspaceId && isValidId(data.id)
+          && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+          && data.agencyCode is string && data.agencyCode.size() > 0 && data.agencyCode.size() <= 60
+          && data.fiscalYear is int && data.fiscalYear >= 2020 && data.fiscalYear <= 2099
+          && data.ownerUid is string && isValidId(data.ownerUid)
+          && isValidBoundedUidList(data.memberUids)
+          && (!('defaultCheckPrefix' in data) || (data.defaultCheckPrefix is string && data.defaultCheckPrefix.size() <= 20))
+          && (!('defaultDvPrefix' in data) || (data.defaultDvPrefix is string && data.defaultDvPrefix.size() <= 20))
+          && (!('coaInitialized' in data) || data.coaInitialized is bool)
+          && data.createdAt is timestamp
+          && data.updatedAt is timestamp;
+      }
+
+      allow get: if isSignedIn() && isValidId(workspaceId) && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+      allow list: if isSignedIn() && (existing().ownerUid == request.auth.uid || request.auth.uid in existing().memberUids);
+      allow create: if isVerified() && isValidId(workspaceId)
+        && isValidWorkspace(incoming())
+        && incoming().ownerUid == request.auth.uid
+        && request.auth.uid in incoming().memberUids
+        && incoming().createdAt == request.time
+        && incoming().updatedAt == request.time;
+      allow update: if isVerified() && isValidId(workspaceId)
+        && isValidWorkspace(incoming())
+        && incoming().id == existing().id
+        && incoming().ownerUid == existing().ownerUid
+        && incoming().createdAt == existing().createdAt
+        && incoming().updatedAt == request.time
+        && (
+          ((isWorkspaceAdmin(workspaceId) || isSuperAdmin())
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'agencyCode', 'fiscalYear', 'memberUids', 'defaultCheckPrefix', 'defaultDvPrefix', 'coaInitialized', 'updatedAt']))
+          || ((isWorkspaceAuditorOrAdmin(workspaceId) || isSuperAdmin())
+            && incoming().diff(existing()).affectedKeys().hasOnly(['name', 'agencyCode', 'fiscalYear', 'defaultCheckPrefix', 'defaultDvPrefix', 'coaInitialized', 'updatedAt']))
+          || (
+            existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/members/$(request.auth.uid))
+            && incoming().diff(existing()).affectedKeys().hasOnly(['memberUids', 'updatedAt'])
+            && incoming().memberUids.hasAll(existing().memberUids)
+            && incoming().memberUids.size() == existing().memberUids.size() + 1
+            && request.auth.uid in incoming().memberUids
+          )
+        );
+      allow delete: if isVerified() && isValidId(workspaceId)
+        && (isWorkspaceAuditorOrAdmin(workspaceId) || isSuperAdmin());
+
+      // Workspace Members (PII-free)
+      match /members/{memberUid} {
+        function isValidWorkspaceMember(data) {
+          return data.keys().hasAll(['uid', 'workspaceId', 'workspaceOwnerUid', 'displayName', 'role', 'joinedAt', 'updatedAt'])
+            && data.keys().hasOnly(['uid', 'workspaceId', 'workspaceOwnerUid', 'displayName', 'role', 'inviteId', 'joinedAt', 'updatedAt'])
+            && data.uid is string && data.uid == memberUid && isValidId(data.uid)
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.workspaceOwnerUid is string && isValidId(data.workspaceOwnerUid)
+            && data.displayName is string && data.displayName.size() > 0 && data.displayName.size() <= 120
+            && data.role in ['admin', 'auditor', 'encoder']
+            && (!('inviteId' in data) || isValidId(data.inviteId))
+            && data.joinedAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(memberUid)
+          && (request.auth.uid == memberUid || isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().uid == request.auth.uid || existing().workspaceOwnerUid == request.auth.uid);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(memberUid)
+          && isValidWorkspaceMember(incoming())
+          && incoming().joinedAt == request.time
+          && incoming().updatedAt == request.time
+          && (
+            (
+              memberUid == request.auth.uid
+              && incoming().role == 'admin'
+              && incoming().workspaceOwnerUid == request.auth.uid
+              && (
+                (exists(/databases/$(database)/documents/workspaces/$(workspaceId)) && get(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid)
+                || (existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId)) && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)).data.ownerUid == request.auth.uid)
+              )
+            )
+            || (
+              memberUid == request.auth.uid
+              && 'inviteId' in incoming()
+              && exists(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId))
+              && get(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId)).data.invitedEmail == request.auth.token.email
+              && get(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId)).data.role == incoming().role
+              && get(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId)).data.workspaceOwnerUid == incoming().workspaceOwnerUid
+              && get(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId)).data.status == 'pending'
+              && getAfter(/databases/$(database)/documents/workspaces/$(workspaceId)/invites/$(incoming().inviteId)).data.status == 'accepted'
+            )
+            || isWorkspaceAdmin(workspaceId)
+          );
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(memberUid)
+          && isValidWorkspaceMember(incoming())
+          && (isWorkspaceAdmin(workspaceId) || isSuperAdmin())
+          && incoming().uid == existing().uid
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().workspaceOwnerUid == existing().workspaceOwnerUid
+          && incoming().joinedAt == existing().joinedAt
+          && incoming().updatedAt == request.time
+          && incoming().diff(existing()).affectedKeys().hasOnly(['role', 'displayName', 'updatedAt']);
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(memberUid)
+          && (
+            ((isWorkspaceAdmin(workspaceId) || isSuperAdmin()) && memberUid != existing().workspaceOwnerUid)
+            || ((isWorkspaceAuditorOrAdmin(workspaceId) || isSuperAdmin()) && (!exists(/databases/$(database)/documents/workspaces/$(workspaceId)) || !existsAfter(/databases/$(database)/documents/workspaces/$(workspaceId))))
+          );
+      }
+
+      // Workspace Invites
+      match /invites/{inviteId} {
+        function isValidWorkspaceInvite(data) {
+          return data.keys().hasAll(['workspaceId', 'workspaceName', 'workspaceOwnerUid', 'invitedEmail', 'role', 'status', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.keys().hasOnly(['workspaceId', 'workspaceName', 'workspaceOwnerUid', 'invitedEmail', 'role', 'status', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.workspaceName is string && data.workspaceName.size() > 0 && data.workspaceName.size() <= 120
+            && data.workspaceOwnerUid is string && isValidId(data.workspaceOwnerUid)
+            && data.invitedEmail is string && data.invitedEmail.size() > 0 && data.invitedEmail.size() <= 254
+            && data.role in ['auditor', 'encoder']
+            && data.status in ['pending', 'accepted']
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(inviteId)
+          && (isWorkspaceAdmin(workspaceId) || (isVerified() && existing().invitedEmail == request.auth.token.email));
+        allow list: if isSignedIn() && (existing().workspaceOwnerUid == request.auth.uid || (isVerified() && existing().invitedEmail == request.auth.token.email));
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(inviteId)
+          && isValidWorkspaceInvite(incoming())
+          && isWorkspaceAdmin(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && incoming().status == 'pending'
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(inviteId)
+          && isValidWorkspaceInvite(incoming())
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().workspaceOwnerUid == existing().workspaceOwnerUid
+          && incoming().invitedEmail == existing().invitedEmail
+          && incoming().role == existing().role
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            (isVerified() && existing().invitedEmail == request.auth.token.email && existing().status == 'pending' && incoming().status == 'accepted' && incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']))
+            || isWorkspaceAdmin(workspaceId)
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(inviteId) && isWorkspaceAuditorOrAdmin(workspaceId);
+      }
+
+      // Transactions (RCI + Post-Audit Working Paper)
+      match /transactions/{txId} {
+        function isValidAttributesMap(attrs) {
+          return attrs is map
+            && attrs.keys().hasAll(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'])
+            && attrs.keys().hasOnly(['a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7'])
+            && attrs.a1 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a2 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a3 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a4 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a5 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a6 in ['ok', 'flag', 'exclamation', 'wrong', 'na']
+            && attrs.a7 in ['ok', 'flag', 'exclamation', 'wrong', 'na'];
+        }
+
+        function isValidAccountRole(role) {
+          return role in [
+            'settlement_debit', 'unrelated_debit', 'withholding_tax', 'retention_payable',
+            'other_deduction', 'cash_bank_payment', 'other_liability', 'other_credit', 'unclassified'
+          ];
+        }
+
+        function isValidJournalLines(lines, allowEmpty) {
+          return lines is list
+            && lines.size() <= 20
+            && (allowEmpty || lines.size() >= 1)
+            && (
+              lines.size() == 0
+              || (
+                lines[0] is map
+                && lines[0].keys().hasAll(['accountCode', 'accountTitle', 'debit', 'credit'])
+                && lines[0].keys().hasOnly(['accountCode', 'accountTitle', 'debit', 'credit', 'accountRole', 'roleSource'])
+                && lines[0].accountCode is string && lines[0].accountCode.size() <= 30
+                && lines[0].accountTitle is string && lines[0].accountTitle.size() <= 140
+                && lines[0].debit is number && lines[0].debit >= 0
+                && lines[0].credit is number && lines[0].credit >= 0
+                && (!('accountRole' in lines[0]) || isValidAccountRole(lines[0].accountRole))
+                && (!('roleSource' in lines[0]) || lines[0].roleSource in ['line_override', 'coa_default', 'system_default', 'unclassified'])
+              )
+            );
+        }
+
+        function isValidGrossBasisOverride(ovr) {
+          return ovr is map
+            && ovr.keys().hasAll(['selectedSource', 'reason', 'actorUid', 'actorName', 'timestamp'])
+            && ovr.keys().hasOnly(['selectedSource', 'reason', 'actorUid', 'actorName', 'timestamp'])
+            && ovr.selectedSource in ['declared_jev_gross', 'computed_settlement_debits']
+            && ovr.reason is string && ovr.reason.size() > 0 && ovr.reason.size() <= 300
+            && ovr.actorUid is string && isValidId(ovr.actorUid)
+            && ovr.actorName is string && ovr.actorName.size() > 0 && ovr.actorName.size() <= 120
+            && ovr.timestamp is string && ovr.timestamp.size() > 0 && ovr.timestamp.size() <= 40;
+        }
+
+        function isValidLegacySnapshot(snap) {
+          return snap is map
+            && snap.keys().hasAll(['grossAmount', 'netAmount', 'taxWithheld', 'status', 'capturedAt', 'capturedByUid'])
+            && snap.keys().hasOnly(['grossAmount', 'netAmount', 'taxWithheld', 'status', 'capturedAt', 'capturedByUid'])
+            && snap.grossAmount is number && snap.grossAmount >= 0
+            && snap.netAmount is number && snap.netAmount >= 0
+            && snap.taxWithheld is number && snap.taxWithheld >= 0
+            && snap.status in ['draft', 'posted', 'lacking', 'audited']
+            && snap.capturedAt is string && snap.capturedAt.size() > 0 && snap.capturedAt.size() <= 40
+            && snap.capturedByUid is string && isValidId(snap.capturedByUid);
+        }
+
+        function isValidTaxComponents(comps) {
+          return comps is list
+            && comps.size() <= 12
+            && (
+              comps.size() == 0
+              || (
+                comps[0] is map
+                && comps[0].keys().hasAll([
+                  'id', 'birAccountCode', 'birAccountTitle', 'taxClassification',
+                  'applicableRate', 'supportingDocRef', 'hasCompleteEvidence',
+                  'taxBaseType', 'roundingMethod', 'computationRule',
+                  'expectedWithholding', 'actualWithholding', 'difference'
+                ])
+                && comps[0].keys().hasOnly([
+                  'id', 'birLineIndex', 'birAccountCode', 'birAccountTitle', 'taxClassification',
+                  'applicableRate', 'supportingDocRef', 'hasCompleteEvidence', 'classificationUncertain',
+                  'taxBaseType', 'taxBaseAmount', 'rulePresetId', 'ruleVersion', 'ruleEffectiveDate',
+                  'birReference', 'roundingMethod', 'computationRule', 'expectedWithholding',
+                  'actualWithholding', 'difference', 'ruleOverrideHistory'
+                ])
+                && comps[0].id is string && comps[0].id.size() > 0 && comps[0].id.size() <= 64
+                && (!('birLineIndex' in comps[0]) || (comps[0].birLineIndex is int && comps[0].birLineIndex >= 0 && comps[0].birLineIndex <= 20))
+                && comps[0].birAccountCode is string && comps[0].birAccountCode.size() <= 30
+                && comps[0].birAccountTitle is string && comps[0].birAccountTitle.size() <= 140
+                && comps[0].taxClassification is string && comps[0].taxClassification.size() <= 140
+                && comps[0].applicableRate is number && comps[0].applicableRate >= 0 && comps[0].applicableRate <= 1
+                && comps[0].supportingDocRef is string && comps[0].supportingDocRef.size() <= 120
+                && comps[0].hasCompleteEvidence is bool
+                && (!('classificationUncertain' in comps[0]) || comps[0].classificationUncertain is bool)
+                && comps[0].taxBaseType in ['vatable_sales', 'gross_inclusive_vat', 'gross_total', 'contract_or_custom', 'exempt_excluded']
+                && (!('taxBaseAmount' in comps[0]) || comps[0].taxBaseAmount == null || (comps[0].taxBaseAmount is number && comps[0].taxBaseAmount >= 0))
+                && (!('rulePresetId' in comps[0]) || (comps[0].rulePresetId is string && comps[0].rulePresetId.size() <= 80))
+                && (!('ruleVersion' in comps[0]) || (comps[0].ruleVersion is string && comps[0].ruleVersion.size() <= 30))
+                && (!('ruleEffectiveDate' in comps[0]) || (comps[0].ruleEffectiveDate is string && comps[0].ruleEffectiveDate.size() <= 30))
+                && (!('birReference' in comps[0]) || (comps[0].birReference is string && comps[0].birReference.size() <= 120))
+                && comps[0].roundingMethod in ['half_up_2dp', 'truncate_2dp']
+                && comps[0].computationRule is string && comps[0].computationRule.size() <= 200
+                && comps[0].expectedWithholding is number && comps[0].expectedWithholding >= 0
+                && comps[0].actualWithholding is number && comps[0].actualWithholding >= 0
+                && comps[0].difference is number
+                && (!('ruleOverrideHistory' in comps[0]) || (comps[0].ruleOverrideHistory is list && comps[0].ruleOverrideHistory.size() <= 10))
+              )
+            );
+        }
+
+        function isValidAuditTrail(trail) {
+          return trail is list
+            && trail.size() <= 50
+            && (
+              trail.size() == 0
+              || (
+                trail[0] is map
+                && trail[0].keys().hasAll(['id', 'timestamp', 'actorUid', 'actorName', 'category', 'reason'])
+                && trail[0].keys().hasOnly(['id', 'timestamp', 'actorUid', 'actorName', 'category', 'targetRef', 'previousValue', 'newValue', 'reason'])
+                && trail[0].id is string && trail[0].id.size() > 0 && trail[0].id.size() <= 64
+                && trail[0].timestamp is string && trail[0].timestamp.size() > 0 && trail[0].timestamp.size() <= 40
+                && trail[0].actorUid is string && trail[0].actorUid.size() > 0 && trail[0].actorUid.size() <= 128
+                && trail[0].actorName is string && trail[0].actorName.size() > 0 && trail[0].actorName.size() <= 120
+                && trail[0].category in ['account_role_override', 'tax_rule_override', 'gross_basis_override', 'legacy_v2_upgrade', 'clerk_review_decision']
+                && (!('targetRef' in trail[0]) || (trail[0].targetRef is string && trail[0].targetRef.size() <= 120))
+                && (!('previousValue' in trail[0]) || (trail[0].previousValue is string && trail[0].previousValue.size() <= 200))
+                && (!('newValue' in trail[0]) || (trail[0].newValue is string && trail[0].newValue.size() <= 200))
+                && trail[0].reason is string && trail[0].reason.size() > 0 && trail[0].reason.size() <= 300
+              )
+            );
+        }
+
+        function isValidProcurementMap(proc) {
+          return proc is map
+            && proc.keys().hasOnly([
+              'poSubmittedToCoaDate', 'poNoDate', 'procurementMethod',
+              'philgepsDate', 'prNoDate', 'abstractDate',
+              'rfqCount', 'rfqStatus', 'iarDate', 'orInvoiceRef'
+            ])
+            && (!('poSubmittedToCoaDate' in proc) || (proc.poSubmittedToCoaDate is string && proc.poSubmittedToCoaDate.size() <= 30))
+            && (!('poNoDate' in proc) || (proc.poNoDate is string && proc.poNoDate.size() <= 50))
+            && (!('procurementMethod' in proc) || (proc.procurementMethod is string && proc.procurementMethod.size() <= 60))
+            && (!('philgepsDate' in proc) || (proc.philgepsDate is string && proc.philgepsDate.size() <= 40))
+            && (!('prNoDate' in proc) || (proc.prNoDate is string && proc.prNoDate.size() <= 50))
+            && (!('abstractDate' in proc) || (proc.abstractDate is string && proc.abstractDate.size() <= 50))
+            && (!('rfqCount' in proc) || (proc.rfqCount is string && proc.rfqCount.size() <= 20))
+            && (!('rfqStatus' in proc) || proc.rfqStatus in ['3plus', 'under3', 'na'])
+            && (!('iarDate' in proc) || (proc.iarDate is string && proc.iarDate.size() <= 40))
+            && (!('orInvoiceRef' in proc) || (proc.orInvoiceRef is string && proc.orInvoiceRef.size() <= 80));
+        }
+
+        function isValidTransaction(data) {
+          return data.keys().hasAll([
+              'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo',
+              'payeeName', 'natureOfTransaction', 'grossAmount', 'netAmount', 'taxWithheld',
+              'journalLines', 'isBalanced', 'attributes', 'status', 'authorizedUids',
+              'createdByUid', 'createdAt', 'updatedAt'
+            ])
+            && data.keys().hasOnly([
+              'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo',
+              'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'payeeName',
+              'natureOfTransaction', 'grossAmount', 'netAmount', 'taxWithheld',
+              'rciAmount', 'declaredJevGross', 'grossBasisOverride', 'taxComponents',
+              'mathStatus', 'taxStatus', 'documentaryStatus', 'clerkReviewStatus',
+              'verificationAuditTrail', 'amountModelVersion', 'legacySnapshot',
+              'templateId', 'journalLines', 'isBalanced', 'attributes', 'procurement', 'remarks',
+              'status', 'submittedToCoaDate', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'
+            ])
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.month in ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December']
+            && data.sequenceNo is number && data.sequenceNo >= 1 && data.sequenceNo <= 999999
+            && data.adaCheckDate is string && data.adaCheckDate.size() <= 20
+            && data.adaCheckNo is string && data.adaCheckNo.size() <= 40
+            && data.dvNo is string && data.dvNo.size() <= 40
+            && (!('dateReceived' in data) || (data.dateReceived is string && data.dateReceived.size() <= 20))
+            && (!('orNoDate' in data) || (data.orNoDate is string && data.orNoDate.size() <= 40))
+            && (!('asaNo' in data) || (data.asaNo is string && data.asaNo.size() <= 40))
+            && (!('jevNoDate' in data) || (data.jevNoDate is string && data.jevNoDate.size() <= 50))
+            && data.payeeName is string && data.payeeName.size() > 0 && data.payeeName.size() <= 180
+            && data.natureOfTransaction is string && data.natureOfTransaction.size() <= 500
+            && data.grossAmount is number && data.grossAmount >= 0
+            && data.netAmount is number && data.netAmount >= 0
+            && data.taxWithheld is number && data.taxWithheld >= 0
+            && (!('rciAmount' in data) || (data.rciAmount is number && data.rciAmount >= 0))
+            && (!('declaredJevGross' in data) || (data.declaredJevGross is number && data.declaredJevGross >= 0))
+            && (!('grossBasisOverride' in data) || isValidGrossBasisOverride(data.grossBasisOverride))
+            && (!('taxComponents' in data) || isValidTaxComponents(data.taxComponents))
+            && (!('mathStatus' in data) || data.mathStatus in ['pending_jev', 'reconciled', 'discrepancy', 'manual_review'])
+            && (!('taxStatus' in data) || data.taxStatus in ['not_applicable', 'none_withheld', 'pending_base', 'incomplete_evidence', 'verified', 'variance', 'manual_review'])
+            && (!('documentaryStatus' in data) || data.documentaryStatus in ['incomplete', 'complete', 'lacking'])
+            && (!('clerkReviewStatus' in data) || data.clerkReviewStatus in ['draft', 'pending_review', 'for_verification', 'lacking', 'audited'])
+            && (!('verificationAuditTrail' in data) || isValidAuditTrail(data.verificationAuditTrail))
+            && (!('amountModelVersion' in data) || (data.amountModelVersion is int && data.amountModelVersion >= 1 && data.amountModelVersion <= 10))
+            && (!('legacySnapshot' in data) || isValidLegacySnapshot(data.legacySnapshot))
+            && (!('templateId' in data) || (data.templateId is string && data.templateId.size() <= 128))
+            && isValidJournalLines(data.journalLines, data.status == 'draft')
+            && data.isBalanced is bool
+            && isValidAttributesMap(data.attributes)
+            && (!('procurement' in data) || isValidProcurementMap(data.procurement))
+            && (!('remarks' in data) || (data.remarks is string && data.remarks.size() <= 800))
+            && data.status in ['draft', 'posted', 'lacking', 'audited']
+            && (!('submittedToCoaDate' in data) || (data.submittedToCoaDate is string && data.submittedToCoaDate.size() <= 20))
+            && isValidBoundedUidList(data.authorizedUids)
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(txId)
+          && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().createdByUid == request.auth.uid || request.auth.uid in existing().authorizedUids);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(txId)
+          && isValidTransaction(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().authorizedUids
+          && incoming().status in ['draft', 'posted', 'lacking']
+          && (!('clerkReviewStatus' in incoming()) || incoming().clerkReviewStatus in ['draft', 'pending_review', 'for_verification', 'lacking'])
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(txId)
+          && isValidTransaction(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (!('legacySnapshot' in existing()) || ('legacySnapshot' in incoming() && incoming().legacySnapshot == existing().legacySnapshot))
+          && (
+            (existing().status != 'audited' && (
+              (incoming().status != 'audited'
+                && (!('clerkReviewStatus' in incoming()) || incoming().clerkReviewStatus != 'audited')
+                && incoming().diff(existing()).affectedKeys().hasOnly([
+                'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo', 'dateReceived',
+                'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+                'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
+                'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',
+                'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',
+                'amountModelVersion', 'legacySnapshot', 'templateId', 'journalLines',
+                'isBalanced', 'attributes', 'procurement', 'remarks', 'status',
+                'submittedToCoaDate', 'updatedAt'
+              ]))
+              || (isWorkspaceAuditorOrAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly([
+                'attributes', 'remarks', 'status', 'clerkReviewStatus', 'documentaryStatus',
+                'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'updatedAt'
+              ]))
+            ))
+            || (existing().status == 'audited' && (isWorkspaceAuditorOrAdmin(workspaceId) || isSuperAdmin()) && incoming().diff(existing()).affectedKeys().hasOnly([
+              'attributes', 'remarks', 'status', 'clerkReviewStatus', 'documentaryStatus',
+              'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'procurement', 'updatedAt'
+            ]))
+            || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(txId)
+          && (
+            (existing().status != 'audited' && (isWorkspaceAdmin(workspaceId) || (isWorkspaceMember(workspaceId) && existing().createdByUid == request.auth.uid)))
+            || isWorkspaceAuditorOrAdmin(workspaceId)
+          );
+      }
+
+      // Smart Entry Templates
+      match /templates/{templateId} {
+        function isValidEntryTemplate(data) {
+          return data.keys().hasAll([
+              'workspaceId', 'name', 'shortcutKey', 'category', 'defaultNature',
+              'taxMode', 'vatRate', 'ewtRate', 'requiresProcurement',
+              'debitAccountCode', 'debitAccountTitle', 'creditCashAccountCode', 'creditCashAccountTitle',
+              'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'
+            ])
+            && data.keys().hasOnly([
+              'workspaceId', 'name', 'shortcutKey', 'category', 'defaultNature',
+              'taxMode', 'vatRate', 'ewtRate', 'requiresProcurement',
+              'debitAccountCode', 'debitAccountTitle', 'creditCashAccountCode', 'creditCashAccountTitle',
+              'autoMatchKeywords', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'
+            ])
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.name is string && data.name.size() > 0 && data.name.size() <= 100
+            && data.shortcutKey is string && data.shortcutKey.size() <= 16
+            && data.category is string && data.category.size() <= 60
+            && data.defaultNature is string && data.defaultNature.size() <= 300
+            && data.taxMode in ['none', 'vat5', 'vat5_ewt2', 'vat5_ewt1', 'pt3', 'pt3_ewt1', 'pt3_ewt2', 'ewt2', 'custom']
+            && data.vatRate is number && data.vatRate >= 0 && data.vatRate <= 1
+            && data.ewtRate is number && data.ewtRate >= 0 && data.ewtRate <= 1
+            && data.requiresProcurement is bool
+            && data.debitAccountCode is string && data.debitAccountCode.size() <= 30
+            && data.debitAccountTitle is string && data.debitAccountTitle.size() <= 140
+            && data.creditCashAccountCode is string && data.creditCashAccountCode.size() <= 30
+            && data.creditCashAccountTitle is string && data.creditCashAccountTitle.size() <= 140
+            && (!('autoMatchKeywords' in data) || (data.autoMatchKeywords is string && data.autoMatchKeywords.size() <= 300))
+            && isValidBoundedUidList(data.authorizedUids)
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(templateId)
+          && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().createdByUid == request.auth.uid || request.auth.uid in existing().authorizedUids);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(templateId)
+          && isValidEntryTemplate(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().authorizedUids
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(templateId)
+          && isValidEntryTemplate(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'shortcutKey', 'category', 'defaultNature', 'taxMode',
+              'vatRate', 'ewtRate', 'requiresProcurement', 'debitAccountCode',
+              'debitAccountTitle', 'creditCashAccountCode', 'creditCashAccountTitle',
+              'autoMatchKeywords', 'updatedAt'
+            ])
+            || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(templateId)
+          && (isWorkspaceAuditorOrAdmin(workspaceId) || (isWorkspaceMember(workspaceId) && existing().createdByUid == request.auth.uid));
+      }
+
+      // Payees Directory
+      match /payees/{payeeId} {
+        function isValidPayeeRecord(data) {
+          return data.keys().hasAll(['workspaceId', 'name', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.keys().hasOnly(['workspaceId', 'name', 'tin', 'defaultTemplateId', 'defaultNature', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.name is string && data.name.size() > 0 && data.name.size() <= 180
+            && (!('tin' in data) || (data.tin is string && data.tin.size() <= 30))
+            && (!('defaultTemplateId' in data) || (data.defaultTemplateId is string && data.defaultTemplateId.size() <= 128))
+            && (!('defaultNature' in data) || (data.defaultNature is string && data.defaultNature.size() <= 300))
+            && isValidBoundedUidList(data.authorizedUids)
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(payeeId)
+          && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().createdByUid == request.auth.uid || request.auth.uid in existing().authorizedUids);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(payeeId)
+          && isValidPayeeRecord(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().authorizedUids
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(payeeId)
+          && isValidPayeeRecord(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['name', 'tin', 'defaultTemplateId', 'defaultNature', 'updatedAt'])
+            || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(payeeId)
+          && (isWorkspaceAuditorOrAdmin(workspaceId) || (isWorkspaceMember(workspaceId) && existing().createdByUid == request.auth.uid));
+      }
+
+      // Workspace Chart of Accounts (COA)
+      match /coaAccounts/{accountId} {
+        function isValidCoaAccountRecord(data) {
+          return data.keys().hasAll(['workspaceId', 'code', 'title', 'normalSide', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.keys().hasOnly(['workspaceId', 'code', 'title', 'normalSide', 'accountClass', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'])
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.code is string && data.code.size() > 0 && data.code.size() <= 30
+            && data.title is string && data.title.size() > 0 && data.title.size() <= 140
+            && data.normalSide in ['debit', 'credit']
+            && (!('accountClass' in data) || data.accountClass in [
+              'settlement_debit', 'unrelated_debit', 'withholding_tax', 'retention_payable',
+              'other_deduction', 'cash_bank_payment', 'other_liability', 'other_credit', 'unclassified'
+            ])
+            && isValidBoundedUidList(data.authorizedUids)
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(accountId)
+          && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().createdByUid == request.auth.uid || request.auth.uid in existing().authorizedUids);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(accountId)
+          && isValidCoaAccountRecord(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().authorizedUids
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(accountId)
+          && isValidCoaAccountRecord(incoming())
+          && isWorkspaceMember(workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly(['code', 'title', 'normalSide', 'accountClass', 'updatedAt'])
+            || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(accountId)
+          && (isWorkspaceAuditorOrAdmin(workspaceId) || (isWorkspaceMember(workspaceId) && existing().createdByUid == request.auth.uid));
+      }
+
+      // Workspace Versioned Tax Rule Presets
+      match /taxPresets/{presetId} {
+        function isValidWorkspaceTaxPreset(data) {
+          return data.keys().hasAll([
+              'id', 'workspaceId', 'name', 'version', 'effectiveFrom',
+              'applicableClassification', 'birReference', 'defaultBirAccountCode',
+              'defaultBirAccountTitle', 'rate', 'defaultTaxBaseType', 'roundingMethod',
+              'computationRule', 'authorizedUids', 'createdByUid', 'createdAt', 'updatedAt'
+            ])
+            && data.keys().hasOnly([
+              'id', 'workspaceId', 'name', 'version', 'effectiveFrom', 'effectiveTo',
+              'applicableClassification', 'birReference', 'defaultBirAccountCode',
+              'defaultBirAccountTitle', 'rate', 'defaultTaxBaseType', 'roundingMethod',
+              'computationRule', 'overrideHistory', 'authorizedUids', 'createdByUid',
+              'createdAt', 'updatedAt'
+            ])
+            && data.id is string && data.id == presetId && isValidId(data.id)
+            && data.workspaceId is string && data.workspaceId == workspaceId && isValidId(data.workspaceId)
+            && data.name is string && data.name.size() > 0 && data.name.size() <= 120
+            && data.version is string && data.version.size() > 0 && data.version.size() <= 30
+            && data.effectiveFrom is string && data.effectiveFrom.size() > 0 && data.effectiveFrom.size() <= 30
+            && (!('effectiveTo' in data) || (data.effectiveTo is string && data.effectiveTo.size() <= 30))
+            && data.applicableClassification is string && data.applicableClassification.size() > 0 && data.applicableClassification.size() <= 160
+            && data.birReference is string && data.birReference.size() > 0 && data.birReference.size() <= 120
+            && data.defaultBirAccountCode is string && data.defaultBirAccountCode.size() <= 30
+            && data.defaultBirAccountTitle is string && data.defaultBirAccountTitle.size() <= 140
+            && data.rate is number && data.rate >= 0 && data.rate <= 1
+            && data.defaultTaxBaseType in ['vatable_sales', 'gross_inclusive_vat', 'gross_total', 'contract_or_custom', 'exempt_excluded']
+            && data.roundingMethod in ['half_up_2dp', 'truncate_2dp']
+            && data.computationRule is string && data.computationRule.size() > 0 && data.computationRule.size() <= 200
+            && (!('overrideHistory' in data) || (data.overrideHistory is list && data.overrideHistory.size() <= 20))
+            && isValidBoundedUidList(data.authorizedUids)
+            && data.createdByUid is string && isValidId(data.createdByUid)
+            && data.createdAt is timestamp
+            && data.updatedAt is timestamp;
+        }
+
+        allow get: if isSignedIn() && isValidId(workspaceId) && isValidId(presetId)
+          && (isWorkspaceMember(workspaceId) || isSuperAdmin());
+        allow list: if isSignedIn() && (existing().createdByUid == request.auth.uid || request.auth.uid in existing().authorizedUids);
+        allow create: if isVerified() && isValidId(workspaceId) && isValidId(presetId)
+          && isValidWorkspaceTaxPreset(incoming())
+          && isWorkspaceAuditorOrAdmin(workspaceId)
+          && incoming().createdByUid == request.auth.uid
+          && request.auth.uid in incoming().authorizedUids
+          && incoming().createdAt == request.time
+          && incoming().updatedAt == request.time;
+        allow update: if isVerified() && isValidId(workspaceId) && isValidId(presetId)
+          && isValidWorkspaceTaxPreset(incoming())
+          && isWorkspaceAuditorOrAdmin(workspaceId)
+          && incoming().workspaceId == existing().workspaceId
+          && incoming().id == existing().id
+          && incoming().createdByUid == existing().createdByUid
+          && incoming().createdAt == existing().createdAt
+          && incoming().updatedAt == request.time
+          && (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name', 'version', 'effectiveFrom', 'effectiveTo', 'applicableClassification',
+              'birReference', 'defaultBirAccountCode', 'defaultBirAccountTitle', 'rate',
+              'defaultTaxBaseType', 'roundingMethod', 'computationRule', 'overrideHistory', 'updatedAt'
+            ])
+            || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
+          );
+        allow delete: if isVerified() && isValidId(workspaceId) && isValidId(presetId) && isWorkspaceAuditorOrAdmin(workspaceId);
+      }
+    }
+  }
+}

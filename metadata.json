@@ -1,0 +1,6 @@
+{
+  "name": "RCI Rapid Ledger — Disbursement & Post-Audit Working Paper",
+  "description": "High-throughput keyboard-first RCI data entry, double-entry accounting balancer, and COA post-audit working paper platform built for 500+ daily transactions.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
