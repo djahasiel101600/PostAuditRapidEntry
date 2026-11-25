@@ -385,6 +385,58 @@ class InviteFlowTests(WorkspaceTestBase):
         )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
 
+    def test_invite_rejects_existing_member(self):
+        self.as_user(self.admin)
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace.id}/invites/',
+            {'id': 'inv-3', 'invitedEmail': self.auditor.email, 'role': 'encoder'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(WorkspaceInvite.objects.filter(pk='inv-3').exists())
+
+    def test_duplicate_pending_invite_rejected(self):
+        self.as_user(self.admin)
+        url = f'/api/workspaces/{self.workspace.id}/invites/'
+        payload = {'id': 'inv-4', 'invitedEmail': 'new@example.com', 'role': 'encoder'}
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        payload['id'] = 'inv-5'
+        response = self.client.post(url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(
+            WorkspaceInvite.objects.filter(
+                workspace=self.workspace, invitedEmail='new@example.com', status='pending'
+            ).count(),
+            1,
+        )
+
+    def test_invite_revoke_permissions(self):
+        invitee = make_user('uid-invitee-2', 'revoke@example.com')
+        self.as_user(self.admin)
+        response = self.client.post(
+            f'/api/workspaces/{self.workspace.id}/invites/',
+            {'id': 'inv-6', 'invitedEmail': invitee.email, 'role': 'encoder'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        url = f'/api/workspaces/{self.workspace.id}/invites/inv-6/'
+        self.as_user(self.encoder)
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_403_FORBIDDEN)
+        self.as_user(self.admin)
+        self.assertEqual(self.client.delete(url).status_code, status.HTTP_204_NO_CONTENT)
+        self.as_user(invitee)
+        self.assertEqual(self.client.get('/api/me/invites/').data, [])
+
+    def test_removed_member_loses_access(self):
+        self.as_user(self.admin)
+        response = self.client.delete(
+            f'/api/workspaces/{self.workspace.id}/members/uid-encoder/'
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.as_user(self.encoder)
+        self.assertEqual(self.client.get(self.tx_url).status_code, status.HTTP_403_FORBIDDEN)
+
 
 class WorkspaceAndMemberTests(WorkspaceTestBase):
     def test_workspace_update_roles(self):

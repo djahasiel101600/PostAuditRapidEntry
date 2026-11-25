@@ -4,7 +4,6 @@ import {
   FileSpreadsheet,
   Pencil,
   Plus,
-  RefreshCw,
   Search,
   Trash2,
   Upload,
@@ -23,6 +22,9 @@ import {
   type TaxMode,
   type TaxRoundingMethod,
   type TaxRulePreset,
+  type WorkspaceInvite,
+  type WorkspaceMember,
+  type WorkspaceRole,
 } from '../types/rci';
 
 type CoaImportRow = {
@@ -65,6 +67,7 @@ export const TemplatesAndTeamView: React.FC = () => {
   const {
     activeWorkspace,
     activeRole,
+    user,
     workspaces,
     switchWorkspace,
     createWorkspace,
@@ -93,10 +96,13 @@ export const TemplatesAndTeamView: React.FC = () => {
     pendingInvitesForUser,
     acceptInvite,
     inviteMember,
-    syncWorkspaceAccessToRecords,
+    updateMemberRole,
+    removeMember,
+    revokeInvite,
   } = useAuthWorkspace();
 
   const canManageCatalog = activeRole === 'admin' || activeRole === 'auditor';
+  const canManageTeam = activeRole === 'admin';
 
   // New Template State
   const [tplName, setTplName] = useState('');
@@ -188,7 +194,8 @@ export const TemplatesAndTeamView: React.FC = () => {
   const [savingWsEdit, setSavingWsEdit] = useState(false);
   const [confirmDeleteWsId, setConfirmDeleteWsId] = useState<string | null>(null);
   const [deletingWsId, setDeletingWsId] = useState<string | null>(null);
-  const [syncingAccess, setSyncingAccess] = useState(false);
+  const [teamBusy, setTeamBusy] = useState(false);
+  const [teamError, setTeamError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   useEffect(() => {
@@ -338,19 +345,61 @@ export const TemplatesAndTeamView: React.FC = () => {
 
   const handleInvite = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!inviteEmail.trim()) return;
-    await inviteMember(inviteEmail.trim(), inviteRole);
-    setInviteEmail('');
-    setNotice(`Invitation sent to ${inviteEmail.trim()}.`);
+    if (!inviteEmail.trim() || teamBusy) return;
+    setTeamError(null);
+    setTeamBusy(true);
+    try {
+      await inviteMember(inviteEmail.trim(), inviteRole);
+      setNotice(`Invitation sent to ${inviteEmail.trim()}.`);
+      setInviteEmail('');
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Failed to send invitation.');
+    } finally {
+      setTeamBusy(false);
+    }
   };
 
-  const handleSync = async () => {
-    setSyncingAccess(true);
+  const handleRoleChange = async (member: WorkspaceMember, role: WorkspaceRole) => {
+    if (teamBusy || member.role === role) return;
+    setTeamError(null);
+    setTeamBusy(true);
     try {
-      await syncWorkspaceAccessToRecords();
-      setNotice('Synced workspace member permissions across all transactions, templates, and COA accounts.');
+      await updateMemberRole(member.uid, role);
+      setNotice(`Role for ${member.displayName} set to ${role}.`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Failed to update member role.');
     } finally {
-      setSyncingAccess(false);
+      setTeamBusy(false);
+    }
+  };
+
+  const handleRemoveMember = async (member: WorkspaceMember) => {
+    if (teamBusy) return;
+    if (!window.confirm(`Remove ${member.displayName} from this workspace?`)) return;
+    setTeamError(null);
+    setTeamBusy(true);
+    try {
+      await removeMember(member.uid);
+      setNotice(`${member.displayName} removed from the workspace.`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Failed to remove member.');
+    } finally {
+      setTeamBusy(false);
+    }
+  };
+
+  const handleRevokeInvite = async (invite: WorkspaceInvite) => {
+    if (teamBusy) return;
+    if (!window.confirm(`Revoke the invitation to ${invite.invitedEmail}?`)) return;
+    setTeamError(null);
+    setTeamBusy(true);
+    try {
+      await revokeInvite(invite.id);
+      setNotice(`Invitation to ${invite.invitedEmail} revoked.`);
+    } catch (error) {
+      setTeamError(error instanceof Error ? error.message : 'Failed to revoke invitation.');
+    } finally {
+      setTeamBusy(false);
     }
   };
 
@@ -1873,50 +1922,55 @@ export const TemplatesAndTeamView: React.FC = () => {
           </div>
 
           <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h3 className="text-sm font-semibold text-slate-900 font-display">
-                  Office Team Collaboration
-                </h3>
-                <p className="text-xs text-slate-500">
-                  Invite encoders or COA auditors via verified Google email.
-                </p>
-              </div>
-              {activeRole === 'admin' && (
-                <button
-                  type="button"
-                  disabled={syncingAccess}
-                  onClick={() => void handleSync()}
-                  title="Sync access list to existing records after new teammates join"
-                  className="inline-flex items-center gap-1 px-2.5 py-1 text-xs border border-slate-200 rounded hover:bg-slate-50 cursor-pointer"
-                >
-                  <RefreshCw className={`w-3 h-3 ${syncingAccess ? 'animate-spin' : ''}`} />
-                  <span>Sync Access</span>
-                </button>
-              )}
+            <div>
+              <h3 className="text-sm font-semibold text-slate-900 font-display">
+                Office Team Collaboration
+              </h3>
+              <p className="text-xs text-slate-500">
+                Invite encoders or COA auditors via verified Google email. They must sign
+                in with that Google account and accept the invitation — share the app URL
+                with them.
+              </p>
             </div>
 
-            {activeRole === 'admin' && (
+            {teamError && (
+              <div className="bg-red-50 border border-red-200 rounded px-3 py-2 text-xs text-red-800 flex items-center justify-between gap-2">
+                <span>{teamError}</span>
+                <button
+                  type="button"
+                  onClick={() => setTeamError(null)}
+                  title="Dismiss"
+                  className="text-red-700 hover:text-red-900 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
+
+            {canManageTeam && (
               <form onSubmit={handleInvite} className="grid grid-cols-12 gap-2">
                 <input
                   type="email"
                   required
+                  disabled={teamBusy}
                   value={inviteEmail}
                   onChange={(e) => setInviteEmail(e.target.value)}
                   placeholder="colleague@gmail.com"
-                  className="col-span-6 h-8 px-2.5 text-xs border border-slate-200 rounded bg-slate-50"
+                  className="col-span-6 h-8 px-2.5 text-xs border border-slate-200 rounded bg-slate-50 disabled:opacity-50"
                 />
                 <select
+                  disabled={teamBusy}
                   value={inviteRole}
                   onChange={(e) => setInviteRole(e.target.value as 'encoder' | 'auditor')}
-                  className="col-span-3 h-8 px-2 text-xs border border-slate-200 rounded bg-slate-50"
+                  className="col-span-3 h-8 px-2 text-xs border border-slate-200 rounded bg-slate-50 disabled:opacity-50"
                 >
                   <option value="encoder">Encoder</option>
                   <option value="auditor">Auditor</option>
                 </select>
                 <button
                   type="submit"
-                  className="col-span-3 h-8 inline-flex items-center justify-center gap-1 bg-slate-900 text-white text-xs font-medium rounded hover:bg-slate-800 cursor-pointer"
+                  disabled={teamBusy}
+                  className="col-span-3 h-8 inline-flex items-center justify-center gap-1 bg-slate-900 text-white text-xs font-medium rounded hover:bg-slate-800 disabled:opacity-50 cursor-pointer"
                 >
                   <UserPlus className="w-3.5 h-3.5" />
                   <span>Invite</span>
@@ -1925,18 +1979,67 @@ export const TemplatesAndTeamView: React.FC = () => {
             )}
 
             <div className="divide-y divide-slate-100 text-xs">
-              {members.map((m) => (
-                <div key={m.uid} className="py-2 flex items-center justify-between">
-                  <span className="font-medium text-slate-900">{m.displayName}</span>
-                  <span className="capitalize font-mono text-[11px] text-slate-500">{m.role}</span>
-                </div>
-              ))}
+              {members.map((m) => {
+                const isOwner = m.uid === m.workspaceOwnerUid;
+                const isSelf = m.uid === user?.uid;
+                const editable = canManageTeam && !isOwner && !isSelf;
+                return (
+                  <div key={m.uid} className="py-2 flex items-center justify-between gap-2">
+                    <span className="font-medium text-slate-900 truncate">{m.displayName}</span>
+                    {editable ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <select
+                          value={m.role}
+                          disabled={teamBusy}
+                          onChange={(e) =>
+                            void handleRoleChange(m, e.target.value as WorkspaceRole)
+                          }
+                          aria-label={`Role for ${m.displayName}`}
+                          className="h-7 px-1.5 text-[11px] border border-slate-200 rounded bg-slate-50 disabled:opacity-50 cursor-pointer"
+                        >
+                          <option value="encoder">Encoder</option>
+                          <option value="auditor">Auditor</option>
+                          <option value="admin">Admin</option>
+                        </select>
+                        <button
+                          type="button"
+                          disabled={teamBusy}
+                          onClick={() => void handleRemoveMember(m)}
+                          title="Remove member"
+                          className="p-1 text-slate-400 hover:text-red-600 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    ) : (
+                      <span className="capitalize font-mono text-[11px] text-slate-500 shrink-0">
+                        {m.role}
+                        {isOwner ? ' · owner' : ''}
+                        {isSelf && !isOwner ? ' · you' : ''}
+                      </span>
+                    )}
+                  </div>
+                );
+              })}
               {sentInvites
                 .filter((i) => i.status === 'pending')
                 .map((inv) => (
-                  <div key={inv.id} className="py-2 flex items-center justify-between text-amber-700">
-                    <span>{inv.invitedEmail}</span>
-                    <span className="font-mono text-[11px]">Pending ({inv.role})</span>
+                  <div key={inv.id} className="py-2 flex items-center justify-between gap-2 text-amber-700">
+                    <span className="truncate">{inv.invitedEmail}</span>
+                    <span className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-mono text-[11px]">Pending ({inv.role})</span>
+                      {canManageTeam && (
+                        <button
+                          type="button"
+                          disabled={teamBusy}
+                          onClick={() => void handleRevokeInvite(inv)}
+                          title="Revoke invitation"
+                          className="p-1 text-amber-600 hover:text-red-600 disabled:opacity-50 cursor-pointer"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      )}
+                    </span>
                   </div>
                 ))}
             </div>

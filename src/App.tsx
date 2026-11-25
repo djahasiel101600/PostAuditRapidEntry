@@ -149,7 +149,7 @@ const WorkspaceShell: React.FC = () => {
             {pendingInvitesForUser.length > 0 && (
               <button
                 type="button"
-                onClick={() => void acceptInvite(pendingInvitesForUser[0])}
+                onClick={() => void acceptInvite(pendingInvitesForUser[0]).catch(() => {})}
                 className="px-3 py-1.5 text-xs font-medium text-blue-800 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 transition-colors cursor-pointer whitespace-nowrap"
               >
                 Accept Invite: {pendingInvitesForUser[0].workspaceName}

@@ -436,6 +436,13 @@ class WorkspaceInviteViewSet(ListModelMixin, DestroyModelMixin, viewsets.Generic
             raise PermissionDenied('Only admins may invite members.')
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
+        email = serializer.validated_data['invitedEmail']
+        if WorkspaceMember.objects.filter(workspace=workspace, user__email__iexact=email).exists():
+            raise ValidationError('That email already belongs to a workspace member.')
+        if WorkspaceInvite.objects.filter(
+            workspace=workspace, invitedEmail=email, status='pending'
+        ).exists():
+            raise ValidationError('A pending invitation for that email already exists.')
         serializer.save(
             workspace=workspace,
             workspaceName=workspace.name,

@@ -145,6 +145,9 @@ interface AuthWorkspaceContextValue {
   pendingInvitesForUser: WorkspaceInvite[];
   acceptInvite: (invite: WorkspaceInvite) => Promise<void>;
   inviteMember: (email: string, role: 'auditor' | 'encoder') => Promise<void>;
+  updateMemberRole: (uid: string, role: WorkspaceRole) => Promise<void>;
+  removeMember: (uid: string) => Promise<void>;
+  revokeInvite: (inviteId: string) => Promise<void>;
   createTransaction: (input: CreateTransactionInput) => Promise<string>;
   batchCreateTransactions: (inputs: CreateTransactionInput[]) => Promise<number>;
   updateTransaction: (txId: string, patch: Partial<TransactionRecord>) => Promise<void>;
@@ -163,7 +166,6 @@ interface AuthWorkspaceContextValue {
   upsertPayee: (payee: { id?: string; name: string; tin?: string; defaultTemplateId?: string; defaultNature?: string }) => Promise<void>;
   deletePayee: (payeeId: string) => Promise<void>;
   batchEnsurePayees: (items: Array<{ name: string; defaultTemplateId?: string; defaultNature?: string }>) => Promise<void>;
-  syncWorkspaceAccessToRecords: () => Promise<void>;
   selectedMonth: MonthName;
   setSelectedMonth: (month: MonthName) => void;
 }
@@ -653,9 +655,17 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       void refreshTransactions(activeWorkspaceId).catch(() => {});
       void refreshTeam(activeWorkspaceId).catch(() => {});
       void refreshPendingInvites().catch(() => {});
+      void refreshWorkspaceLinks().catch(() => {});
     }, 30000);
     return () => clearInterval(timer);
-  }, [user, activeWorkspaceId, refreshTransactions, refreshTeam, refreshPendingInvites]);
+  }, [
+    user,
+    activeWorkspaceId,
+    refreshTransactions,
+    refreshTeam,
+    refreshPendingInvites,
+    refreshWorkspaceLinks,
+  ]);
 
   // Members & sent invites (server scopes visibility by role/ownership)
   useEffect(() => {
@@ -1428,6 +1438,51 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     [user, activeWorkspace, refreshTeam],
   );
 
+  const updateMemberRole = useCallback(
+    async (uid: string, role: WorkspaceRole) => {
+      if (!user || !activeWorkspace) return;
+      const wsId = activeWorkspace.id;
+      try {
+        await apiPatch(`/workspaces/${wsId}/members/${encodeURIComponent(uid)}/`, { role });
+        await refreshTeam(wsId);
+      } catch (error) {
+        logApiError(error, 'write', `/workspaces/${wsId}/members/${uid}`);
+        throw error;
+      }
+    },
+    [user, activeWorkspace, refreshTeam],
+  );
+
+  const removeMember = useCallback(
+    async (uid: string) => {
+      if (!user || !activeWorkspace) return;
+      const wsId = activeWorkspace.id;
+      try {
+        await apiDelete(`/workspaces/${wsId}/members/${encodeURIComponent(uid)}/`);
+        await refreshTeam(wsId);
+      } catch (error) {
+        logApiError(error, 'delete', `/workspaces/${wsId}/members/${uid}`);
+        throw error;
+      }
+    },
+    [user, activeWorkspace, refreshTeam],
+  );
+
+  const revokeInvite = useCallback(
+    async (inviteId: string) => {
+      if (!user || !activeWorkspace) return;
+      const wsId = activeWorkspace.id;
+      try {
+        await apiDelete(`/workspaces/${wsId}/invites/${encodeURIComponent(inviteId)}/`);
+        await refreshTeam(wsId);
+      } catch (error) {
+        logApiError(error, 'delete', `/workspaces/${wsId}/invites/${inviteId}`);
+        throw error;
+      }
+    },
+    [user, activeWorkspace, refreshTeam],
+  );
+
   const acceptInvite = useCallback(
     async (invite: WorkspaceInvite) => {
       if (!user) return;
@@ -1446,9 +1501,6 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     },
     [user, refreshWorkspaceLinks, refreshPendingInvites, switchWorkspace],
   );
-
-  // Server maintains authorizedUids from membership; kept for interface compatibility
-  const syncWorkspaceAccessToRecords = useCallback(async () => {}, []);
 
   const getWorkspaceDetails = useCallback(async (workspaceId: string): Promise<Workspace | null> => {
     try {
@@ -1578,7 +1630,9 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
     upsertPayee,
     deletePayee,
     batchEnsurePayees,
-    syncWorkspaceAccessToRecords,
+    updateMemberRole,
+    removeMember,
+    revokeInvite,
     selectedMonth,
     setSelectedMonth,
   };

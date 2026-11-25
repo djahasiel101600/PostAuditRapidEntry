@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { BookOpenCheck, LogOut } from 'lucide-react';
+import { BookOpenCheck, Check, LogOut } from 'lucide-react';
 import { useAuthWorkspace } from '../contexts/AuthWorkspaceContext';
+import type { WorkspaceInvite } from '../types/rci';
 
 /**
  * First-run screen shown when the signed-in user has no workspace yet.
@@ -8,7 +9,7 @@ import { useAuthWorkspace } from '../contexts/AuthWorkspaceContext';
  * own fiscal-year workspace, then the Get Started guide takes over.
  */
 export const WelcomeSetup: React.FC = () => {
-  const { user, createWorkspace, logout } = useAuthWorkspace();
+  const { user, createWorkspace, logout, pendingInvitesForUser, acceptInvite } = useAuthWorkspace();
   const currentYear = new Date().getFullYear();
   const [name, setName] = useState('');
   const [agencyCode, setAgencyCode] = useState('');
@@ -17,6 +18,8 @@ export const WelcomeSetup: React.FC = () => {
   );
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [acceptingId, setAcceptingId] = useState<string | null>(null);
+  const [acceptError, setAcceptError] = useState<string | null>(null);
 
   const canSubmit = name.trim().length > 0 && agencyCode.trim().length > 0 && !creating;
 
@@ -34,9 +37,54 @@ export const WelcomeSetup: React.FC = () => {
     }
   };
 
+  const handleAcceptInvite = async (invite: WorkspaceInvite) => {
+    if (acceptingId) return;
+    setAcceptingId(invite.id);
+    setAcceptError(null);
+    try {
+      // On success the context switches into the invited workspace and this
+      // screen unmounts; only failures need local state cleanup.
+      await acceptInvite(invite);
+    } catch (err) {
+      setAcceptError(err instanceof Error ? err.message : 'Could not accept the invitation.');
+      setAcceptingId(null);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-slate-50 flex items-center justify-center p-6">
       <div className="w-full max-w-lg bg-white border border-slate-200 rounded-lg p-8 space-y-6">
+        {pendingInvitesForUser.length > 0 && (
+          <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-2">
+            <h2 className="text-xs font-semibold text-blue-950">Workspace Invitations</h2>
+            {pendingInvitesForUser.map((inv) => (
+              <div
+                key={inv.id}
+                className="flex items-center justify-between gap-2 bg-white border border-blue-200 rounded px-3 py-2 text-xs"
+              >
+                <span className="text-slate-700">
+                  Invited to <strong>{inv.workspaceName}</strong> as{' '}
+                  <span className="capitalize font-medium">{inv.role}</span>
+                </span>
+                <button
+                  type="button"
+                  disabled={acceptingId !== null}
+                  onClick={() => void handleAcceptInvite(inv)}
+                  className="inline-flex items-center gap-1 px-3 py-1 bg-slate-900 text-white rounded hover:bg-slate-800 disabled:opacity-50 cursor-pointer whitespace-nowrap"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>{acceptingId === inv.id ? 'Joining...' : 'Join Workspace'}</span>
+                </button>
+              </div>
+            ))}
+            {acceptError && (
+              <p className="text-xs text-red-700 bg-red-50 border border-red-200 rounded px-3 py-2">
+                {acceptError}
+              </p>
+            )}
+          </div>
+        )}
+
         <div>
           <p className="text-xs font-medium text-slate-500 mb-2">
             Welcome{user?.displayName ? `, ${user.displayName}` : ''}
