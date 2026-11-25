@@ -1,0 +1,73 @@
+# RCI Rapid Ledger — Docker Desktop deployment.
+#
+# Network topology:
+#   cloudflared (existing service on "office-network")
+#        -> http://rci-gateway:80   (this project, SPA + /api reverse proxy)
+#        -> rci-api:8000            (private rci-internal network only)
+#
+# No service publishes host ports. Service names are rci-prefixed to avoid
+# collisions on the shared "office-network".
+#
+# Usage:
+#   copy deploy/.env.example deploy/.env  (fill in the values)
+#   docker compose --env-file deploy/.env up -d --build
+
+name: rci
+
+services:
+  rci-api:
+    build:
+      context: ./backend
+    container_name: rci-api
+    restart: unless-stopped
+    environment:
+      DEBUG: "false"
+      SECRET_KEY: ${RCI_SECRET_KEY:?Set RCI_SECRET_KEY in deploy/.env}
+      # 127.0.0.1/localhost keep the container healthcheck working.
+      ALLOWED_HOSTS: 127.0.0.1,localhost,${RCI_ALLOWED_HOSTS:?Set RCI_ALLOWED_HOSTS in deploy/.env}
+      CSRF_TRUSTED_ORIGINS: ${RCI_CSRF_TRUSTED_ORIGINS:-}
+      DATABASE_URL: ${RCI_DATABASE_URL:-sqlite:////data/db.sqlite3}
+      GOOGLE_CLIENT_ID: ${RCI_GOOGLE_CLIENT_ID:-}
+      SUPERADMIN_EMAIL: ${RCI_SUPERADMIN_EMAIL:-}
+    volumes:
+      - rci-data:/data
+    networks:
+      - rci-internal
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/admin/login/', timeout=3)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  rci-gateway:
+    build:
+      context: .
+      args:
+        VITE_GOOGLE_CLIENT_ID: ${RCI_GOOGLE_CLIENT_ID:-}
+    container_name: rci-gateway
+    restart: unless-stopped
+    depends_on:
+      rci-api:
+        condition: service_healthy
+    networks:
+      - office-network
+      - rci-internal
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/index.html"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+networks:
+  # Shared with the Cloudflare tunnel container; must already exist.
+  office-network:
+    external: true
+    name: office-network
+  rci-internal:
+    name: rci-internal
+
+volumes:
+  rci-data:
+    name: rci-data
