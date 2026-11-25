@@ -94,6 +94,9 @@ class WorkspaceRecord(TimestampedModel):
         abstract = True
 
 
+PAYMENT_MODE_CHOICES = (('check', 'Check'), ('ada', 'ADA'))
+
+
 class Transaction(WorkspaceRecord):
     month = models.CharField(max_length=10)
     sequenceNo = models.IntegerField()
@@ -127,6 +130,7 @@ class Transaction(WorkspaceRecord):
     dvSignatories = models.JSONField(null=True, blank=True)
     procurement = models.JSONField(null=True, blank=True)
     testOfControls = models.JSONField(null=True, blank=True)
+    paymentMode = models.CharField(max_length=8, choices=PAYMENT_MODE_CHOICES, default='check')
     remarks = models.CharField(max_length=800, blank=True, default='')
     status = models.CharField(max_length=10)
     submittedToCoaDate = models.CharField(max_length=20, blank=True, default='')

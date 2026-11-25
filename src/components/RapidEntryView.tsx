@@ -50,6 +50,7 @@ import {
   hasFlaggedAttribute,
   incrementCodeString,
   isLegacyTransaction,
+  normalizePaymentMode,
   resolveJournalLineRole,
   round2,
   sanitizeTaxComponents,
@@ -75,6 +76,7 @@ import {
   type GrossBasisOverride,
   type JournalLine,
   type MonthName,
+  type PaymentMode,
   type ProcurementMeta,
   type RfqStatus,
   type TaxBaseType,
@@ -237,6 +239,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [sequenceNo, setSequenceNo] = useState<number>(nextDefaults.seq);
   const [adaCheckDate, setAdaCheckDate] = useState<string>(nextDefaults.date);
   const [adaCheckNo, setAdaCheckNo] = useState<string>(nextDefaults.checkNo);
+  const [paymentMode, setPaymentMode] = useState<PaymentMode>('check');
   const [dvNo, setDvNo] = useState<string>(nextDefaults.dvNo);
   const [dateReceived, setDateReceived] = useState<string>('');
   const [orNoDate, setOrNoDate] = useState<string>('');
@@ -442,6 +445,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setVerificationAuditTrail([]);
     setAttributes(defaultAttributes());
     setDvSignatories(defaultDvSignatories());
+    setPaymentMode('check');
     setRemarks('complete');
     setProcurement({});
     setPhilgepsLookup({ status: 'idle' });
@@ -464,6 +468,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setSequenceNo(editingTx.sequenceNo);
     setAdaCheckDate(editingTx.adaCheckDate);
     setAdaCheckNo(editingTx.adaCheckNo);
+    setPaymentMode(normalizePaymentMode(editingTx.paymentMode));
     setDvNo(editingTx.dvNo);
     setDateReceived(editingTx.dateReceived || '');
     setOrNoDate(editingTx.orNoDate || '');
@@ -853,6 +858,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               sequenceNo,
               adaCheckDate,
               adaCheckNo,
+              paymentMode,
               dvNo,
               dateReceived,
               orNoDate,
@@ -887,6 +893,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               sequenceNo,
               adaCheckDate,
               adaCheckNo,
+              paymentMode,
               dvNo,
               dateReceived,
               orNoDate,
@@ -963,6 +970,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             sequenceNo,
             adaCheckDate,
             adaCheckNo,
+            paymentMode,
             dvNo,
             dateReceived,
             orNoDate,
@@ -1792,9 +1800,39 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             </div>
 
             <div className="grid grid-cols-12 gap-2">
+              <div className="col-span-4 sm:col-span-3">
+                <label className="block text-[11px] font-medium text-slate-500 mb-1">
+                  Payment Via
+                </label>
+                <div className="flex h-9 rounded border border-slate-300 bg-white overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMode('check')}
+                    className={`flex-1 text-xs font-medium cursor-pointer transition-colors ${
+                      paymentMode === 'check'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    Check (RCI)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMode('ada')}
+                    className={`flex-1 text-xs font-medium cursor-pointer transition-colors border-l border-slate-300 ${
+                      paymentMode === 'ada'
+                        ? 'bg-blue-600 text-white'
+                        : 'bg-white text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    ADA (RADAI)
+                  </button>
+                </div>
+              </div>
+
               <div className="col-span-4 sm:col-span-2">
                 <label className="block text-[11px] font-medium text-slate-500 mb-1">
-                  ADA / Check No.
+                  {paymentMode === 'ada' ? 'ADA No.' : 'Check No.'}
                 </label>
                 <input
                   ref={checkNoInputRef}
@@ -1809,7 +1847,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   }`}
                 />
                 {isDuplicateCheck && (
-                  <p className="text-[11px] text-red-600 mt-0.5 font-medium">Duplicate Check No.</p>
+                  <p className="text-[11px] text-red-600 mt-0.5 font-medium">
+                    {paymentMode === 'ada' ? 'Duplicate ADA No.' : 'Duplicate Check No.'}
+                  </p>
                 )}
               </div>
 

@@ -256,6 +256,50 @@ class TransactionRuleTests(WorkspaceTestBase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['testOfControls']['status'], 'disallowed')
 
+    def test_payment_mode_roundtrip_and_validation(self):
+        self.as_user(self.encoder)
+        response = self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').paymentMode, 'check')
+
+        ada_payload = tx_payload(self.workspace.id, 'tx-2', paymentMode='ada')
+        response = self.client.post(self.tx_url, ada_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Transaction.objects.get(pk='tx-2').paymentMode, 'ada')
+
+        bad_payload = tx_payload(self.workspace.id, 'tx-3', paymentMode='cash')
+        response = self.client.post(self.tx_url, bad_payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_payment_mode_patch_permissions(self):
+        self.as_user(self.encoder)
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+
+        response = self.client.patch(self.tx_url + 'tx-1/', {'paymentMode': 'ada'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['paymentMode'], 'ada')
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'status': 'audited', 'clerkReviewStatus': 'audited'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        # Mode is locked on audited rows (not in TX_AUDIT_FIELDS)
+        response = self.client.patch(self.tx_url + 'tx-1/', {'paymentMode': 'check'}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Same-value mode in an audited payload is skipped by changed_keys
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'paymentMode': 'ada', 'remarks': 'complete'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').paymentMode, 'ada')
+
 
 class CoaAndTaxPresetTests(WorkspaceTestBase):
     def test_coa_account_class_validation(self):

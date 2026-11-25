@@ -11,6 +11,7 @@ import {
   type JournalLine,
   type LegacySnapshot,
   type MathReconciliationStatus,
+  type PaymentMode,
   type ProcurementMeta,
   type TaxBaseType,
   type TaxMode,
@@ -1218,6 +1219,15 @@ export function sanitizeTestOfControls(
     cleaned.particulars = input.particulars.trim().slice(0, 2000);
   }
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
+}
+
+/** Normalize a stored payment mode; anything but a case-insensitive 'ada' is treated as 'check'. */
+export function normalizePaymentMode(value?: string | null): PaymentMode {
+  return String(value ?? '').trim().toLowerCase() === 'ada' ? 'ada' : 'check';
+}
+
+export function paymentModeLabel(value?: string | null): 'Check' | 'ADA' {
+  return normalizePaymentMode(value) === 'ada' ? 'ADA' : 'Check';
 }
 
 const ALL_ACCOUNT_ROLES = new Set<AccountRole>([

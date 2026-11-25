@@ -160,6 +160,8 @@ export interface TestOfControlsRecord {
   particulars?: string;
 }
 
+export type PaymentMode = 'check' | 'ada';
+
 export type TransactionStatus = 'draft' | 'posted' | 'lacking' | 'audited';
 
 export type MathReconciliationStatus =
@@ -296,6 +298,7 @@ export interface TransactionRecord {
   sequenceNo: number;
   adaCheckDate: string;
   adaCheckNo: string;
+  paymentMode?: PaymentMode;
   dvNo: string;
   dateReceived?: string;
   orNoDate?: string;

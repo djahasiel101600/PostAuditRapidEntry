@@ -11,6 +11,8 @@ import {
   getDisplayRciNetAmount,
   hasFlaggedAttribute,
   isLegacyTransaction,
+  normalizePaymentMode,
+  paymentModeLabel,
   sanitizeVerificationAuditTrail,
 } from '../lib/taxAndLedger';
 import {
@@ -317,7 +319,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
               <tr>
                 <th className="py-2 px-2.5 border-r border-slate-200 w-10">No.</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 w-24">ADA/Check Date</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-24">Check No</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 w-28">Check/ADA No</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 w-40">Payee</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">RCI Net Paid</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">JEV Gross</th>
@@ -408,6 +410,15 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                             rowSpan={rowSpan}
                             className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums font-medium text-slate-900 whitespace-nowrap"
                           >
+                            <span
+                              className={`inline-block text-[10px] leading-none px-1 py-0.5 rounded border mr-1 align-middle font-sans font-semibold ${
+                                normalizePaymentMode(tx.paymentMode) === 'ada'
+                                  ? 'bg-indigo-50 text-indigo-700 border-indigo-200'
+                                  : 'bg-slate-100 text-slate-600 border-slate-200'
+                              }`}
+                            >
+                              {paymentModeLabel(tx.paymentMode)}
+                            </span>
                             {tx.adaCheckNo}
                           </td>
                           <td

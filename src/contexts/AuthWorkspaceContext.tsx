@@ -26,6 +26,7 @@ import {
   evaluateTaxVerification,
   hasFlaggedAttribute,
   isLegacyTransaction,
+  normalizePaymentMode,
   round2,
   sanitizeJournalLines,
   sanitizeDvSignatories,
@@ -47,6 +48,7 @@ import {
   type LegacySnapshot,
   type MathReconciliationStatus,
   type MonthName,
+  type PaymentMode,
   type PayeeRecord,
   type ProcurementMeta,
   type TaxRulePreset,
@@ -70,6 +72,7 @@ export interface CreateTransactionInput {
   sequenceNo: number;
   adaCheckDate: string;
   adaCheckNo: string;
+  paymentMode?: PaymentMode;
   dvNo: string;
   dateReceived?: string;
   orNoDate?: string;
@@ -727,6 +730,7 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         sequenceNo: Math.max(1, Math.round(input.sequenceNo || 1)),
         adaCheckDate: cleanString(input.adaCheckDate, 20),
         adaCheckNo: cleanString(input.adaCheckNo, 40),
+        paymentMode: normalizePaymentMode(input.paymentMode),
         dvNo: cleanString(input.dvNo, 40),
         payeeName: cleanString(input.payeeName, 180) || 'Unnamed Payee',
         natureOfTransaction: cleanString(input.natureOfTransaction, 500),
@@ -842,6 +846,7 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       if (patch.sequenceNo !== undefined) cleanPatch.sequenceNo = Math.max(1, Math.round(patch.sequenceNo));
       if (patch.adaCheckDate !== undefined) cleanPatch.adaCheckDate = cleanString(patch.adaCheckDate, 20);
       if (patch.adaCheckNo !== undefined) cleanPatch.adaCheckNo = cleanString(patch.adaCheckNo, 40);
+      if (patch.paymentMode !== undefined) cleanPatch.paymentMode = normalizePaymentMode(patch.paymentMode);
       if (patch.dvNo !== undefined) cleanPatch.dvNo = cleanString(patch.dvNo, 40);
       if (patch.dateReceived !== undefined) cleanPatch.dateReceived = cleanString(patch.dateReceived, 20);
       if (patch.orNoDate !== undefined) cleanPatch.orNoDate = cleanString(patch.orNoDate, 40);

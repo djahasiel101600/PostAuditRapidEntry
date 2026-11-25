@@ -28,6 +28,8 @@ import {
   evaluateDocumentaryStatus,
   evaluateTaxVerification,
   isLegacyTransaction,
+  normalizePaymentMode,
+  paymentModeLabel,
   resolveJournalLineRole,
   sanitizeDvSignatories,
   sanitizeProcurement,
@@ -749,4 +751,19 @@ test('sanitizeProcurement splits legacy No / Date pairs into independent fields'
     iarNo: 'IAR-3',
     iarDate: '01-06-2026',
   });
+});
+
+test('normalizePaymentMode maps to check/ada and legacy values to check', () => {
+  assert.equal(normalizePaymentMode(undefined), 'check');
+  assert.equal(normalizePaymentMode(null), 'check');
+  assert.equal(normalizePaymentMode(''), 'check');
+  assert.equal(normalizePaymentMode('check'), 'check');
+  assert.equal(normalizePaymentMode('ada'), 'ada');
+  assert.equal(normalizePaymentMode('ADA '), 'ada');
+  assert.equal(normalizePaymentMode('cash'), 'check');
+
+  assert.equal(paymentModeLabel(undefined), 'Check');
+  assert.equal(paymentModeLabel('check'), 'Check');
+  assert.equal(paymentModeLabel('ada'), 'ADA');
+  assert.equal(paymentModeLabel('ADA'), 'ADA');
 });

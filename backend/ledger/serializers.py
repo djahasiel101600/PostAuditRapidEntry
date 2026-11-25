@@ -174,7 +174,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
     class Meta:
         model = Transaction
         fields = [
-            'id', 'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo',
+            'id', 'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo',
             'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
             'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
             'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus', 'documentaryStatus',

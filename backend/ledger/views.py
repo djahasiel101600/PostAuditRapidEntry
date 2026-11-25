@@ -47,7 +47,7 @@ TX_AUDIT_FIELDS = {
     'documentaryStatus', 'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate',
 }
 TX_FULL_EDIT_FIELDS = {
-    'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo', 'dateReceived',
+    'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo', 'dateReceived',
     'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
     'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
     'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',

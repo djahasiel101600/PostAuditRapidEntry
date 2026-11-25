@@ -3,6 +3,7 @@ import {
   getDisplayRciNetAmount,
   isLegacyTransaction,
   normalizeAttributeState,
+  paymentModeLabel,
 } from './taxAndLedger';
 import { renderSlashPair } from './slashPair';
 import type { AuditAttributeState, MonthName, ProcurementMeta, TransactionRecord } from '../types/rci';
@@ -58,6 +59,7 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Month': isFirst ? tx.month : '',
         'ADA/Check Date': isFirst ? tx.adaCheckDate : '',
         'ADA/Check No': isFirst ? tx.adaCheckNo : '',
+        'Payment Mode': isFirst ? paymentModeLabel(tx.paymentMode) : '',
         'DV No.': isFirst ? tx.dvNo : '',
         'Payee': isFirst ? tx.payeeName : '',
         'JEV Gross Amount': isFirst ? (hasJevLines || tx.grossAmount > 0 ? tx.grossAmount : 'Pending JEV') : '',
@@ -114,6 +116,7 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
       'Month': tx.month,
       'Date': tx.adaCheckDate,
       'Serial/Check No': tx.adaCheckNo,
+      'Payment Mode': paymentModeLabel(tx.paymentMode),
       'DV/Payroll No.': tx.dvNo,
       'Payee': tx.payeeName,
       'Nature of Transaction': tx.natureOfTransaction,
