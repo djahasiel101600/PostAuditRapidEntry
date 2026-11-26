@@ -224,10 +224,13 @@ export const CoaAccountPicker: React.FC<CoaAccountPickerProps> = ({
           disabled={saving}
           onClick={() => void handleSaveCustom()}
           title="Save custom Account Code & Title to workspace Chart of Accounts"
-          className="h-7 px-1.5 inline-flex items-center gap-1 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 whitespace-nowrap shrink-0 cursor-pointer"
+          aria-label="Save custom Account Code and Title to workspace Chart of Accounts"
+          className={`h-7 inline-flex items-center justify-center gap-1 text-[10px] font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded hover:bg-blue-100 whitespace-nowrap shrink-0 cursor-pointer ${
+            compact ? 'w-7 px-0' : 'px-1.5'
+          }`}
         >
           <BookmarkPlus className="w-3 h-3" />
-          <span>Save</span>
+          {!compact && <span>Save</span>}
         </button>
       )}
     </div>

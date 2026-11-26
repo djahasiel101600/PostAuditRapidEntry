@@ -1633,6 +1633,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const netTaxDelta = round2(
     taxEvaluation.totalAllocatedActualTax - taxEvaluation.totalExpectedTax,
   );
+  const showTaxSummary = taxComponents.length > 0 || withholdingLinesInJev.length > 0;
 
   const describeTemplateMismatch = (comp: TaxVerificationComponent): string | null => {
     const mode = activeTemplate?.taxMode;
@@ -1771,6 +1772,36 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const docChip = isCancelled
     ? DOC_STATUS_LABELS.not_applicable
     : DOC_STATUS_LABELS[docStatus];
+  const mathGlyph = isCancelled
+    ? '–'
+    : reconciliationSummary.mathStatus === 'reconciled'
+      ? '✓'
+      : reconciliationSummary.mathStatus === 'discrepancy'
+        ? '✕'
+        : reconciliationSummary.mathStatus === 'pending_jev' ||
+            reconciliationSummary.mathStatus === 'manual_review'
+          ? '!'
+          : '–';
+  const taxGlyph = isCancelled
+    ? '–'
+    : taxEvaluation.taxStatus === 'verified'
+      ? '✓'
+      : taxEvaluation.taxStatus === 'variance'
+        ? '✕'
+        : taxEvaluation.taxStatus === 'none_withheld' ||
+            taxEvaluation.taxStatus === 'not_applicable'
+          ? '–'
+          : '!';
+  const docGlyph = isCancelled
+    ? '–'
+    : docStatus === 'complete'
+      ? '✓'
+      : docStatus === 'lacking'
+        ? '✕'
+        : docStatus === 'incomplete'
+          ? '!'
+          : '–';
+  const hasJournalAmounts = balanceSummary.totalDebit > 0 || balanceSummary.totalCredit > 0;
 
   return (
     <div className="flex flex-col h-full min-h-0">
@@ -2463,14 +2494,18 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             </span>
             <span
               className={`inline-flex items-center gap-1.5 text-xs font-semibold font-mono tabular-nums ${
-                journalLines.length === 0
-                  ? 'text-amber-700'
-                  : balanceSummary.isBalanced
-                    ? 'text-emerald-700'
-                    : 'text-red-600'
+                isCancelled && !hasJournalAmounts
+                  ? 'text-slate-500'
+                  : !hasJournalAmounts
+                    ? 'text-amber-700'
+                    : balanceSummary.isBalanced
+                      ? 'text-emerald-700'
+                      : 'text-red-600'
               }`}
             >
-              {journalLines.length === 0 ? (
+              {isCancelled && !hasJournalAmounts ? (
+                <span>NO JEV (CANCELLED)</span>
+              ) : !hasJournalAmounts ? (
                 <span>PENDING JEV</span>
               ) : balanceSummary.isBalanced ? (
                 <>
@@ -2577,9 +2612,21 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     : 'text-slate-900'
                 }`}
               >
-                {reconciliationSummary.expectedNetAmount !== null
-                  ? `₱${formatPeso(reconciliationSummary.expectedNetAmount)}`
-                  : '—'}
+                {reconciliationSummary.expectedNetAmount !== null ? (
+                  `₱${formatPeso(reconciliationSummary.expectedNetAmount)}`
+                ) : isCancelled ? (
+                  <span className="font-sans font-normal text-[10px] text-slate-500">
+                    N/A (cancelled)
+                  </span>
+                ) : reconciliationSummary.mathStatus === 'pending_jev' ? (
+                  <span className="font-sans font-normal text-[10px] text-amber-700">
+                    Pending JEV
+                  </span>
+                ) : (
+                  <span className="font-sans font-normal text-[10px] text-amber-800">
+                    Pending review
+                  </span>
+                )}
               </span>
             </div>
             <div className="flex justify-between font-mono tabular-nums">
@@ -2687,7 +2734,12 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   }
                 >
                   <span className="block text-[10px] opacity-75">Math Reconciliation</span>
-                  <span className="font-semibold">{mathChip.label}</span>
+                  <span className="font-semibold">
+                    <span aria-hidden="true" className="mr-1">
+                      {mathGlyph}
+                    </span>
+                    {mathChip.label}
+                  </span>
                 </div>
                 <div
                   className={`px-2 py-1.5 rounded border ${taxChip.cls}`}
@@ -2698,11 +2750,21 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   }
                 >
                   <span className="block text-[10px] opacity-75">Tax Verification</span>
-                  <span className="font-semibold">{taxChip.label}</span>
+                  <span className="font-semibold">
+                    <span aria-hidden="true" className="mr-1">
+                      {taxGlyph}
+                    </span>
+                    {taxChip.label}
+                  </span>
                 </div>
                 <div className={`px-2 py-1.5 rounded border ${docChip.cls}`}>
                   <span className="block text-[10px] opacity-75">Documentary</span>
-                  <span className="font-semibold">{docChip.label}</span>
+                  <span className="font-semibold">
+                    <span aria-hidden="true" className="mr-1">
+                      {docGlyph}
+                    </span>
+                    {docChip.label}
+                  </span>
                 </div>
                 <div className="px-2 py-1.5 rounded border border-slate-200 bg-white">
                   <span className="block text-[10px] text-slate-500">Clerk Review</span>
@@ -2732,7 +2794,14 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               {!isCancelled &&
                 reconciliationSummary.reasons.length > 0 &&
                 reconciliationSummary.mathStatus !== 'reconciled' && (
-                  <p className="text-[11px] text-red-700 leading-snug">
+                  <p
+                    className={`text-[11px] leading-snug ${
+                      reconciliationSummary.mathStatus === 'discrepancy'
+                        ? 'text-red-700'
+                        : 'text-amber-800'
+                    }`}
+                    title={reconciliationSummary.reasons.join(' ')}
+                  >
                     {reconciliationSummary.reasons[0]}
                   </p>
                 )}
@@ -2902,9 +2971,14 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               <button
                 type="button"
                 onClick={() => setShowTaxComponents((v) => !v)}
-                className="text-xs font-medium text-slate-700 hover:text-slate-900 cursor-pointer"
+                className="inline-flex items-center gap-1 text-xs font-medium text-slate-700 hover:text-slate-900 cursor-pointer"
               >
-                Tax Verification Components ({taxComponents.length})
+                {showTaxComponents ? (
+                  <ChevronDown className="w-3 h-3" />
+                ) : (
+                  <ChevronRight className="w-3 h-3" />
+                )}
+                <span>Tax Verification Components ({taxComponents.length})</span>
               </button>
               <div className="flex items-center gap-2">
                 {withholdingLinesInJev.length === 0 && taxComponents.length === 0 && (
@@ -2942,50 +3016,52 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
 
             {showTaxComponents && (
               <div className="space-y-2">
-                <div className="grid grid-cols-4 gap-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-[10px] font-mono tabular-nums text-right">
-                  <div>
-                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
-                      Expected
+                {showTaxSummary && (
+                  <div className="grid grid-cols-4 gap-1 p-1.5 bg-slate-50 border border-slate-200 rounded text-[10px] font-mono tabular-nums text-right">
+                    <div>
+                      <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                        Expected
+                      </div>
+                      <div className="text-slate-700">
+                        ₱{formatPeso(taxEvaluation.totalExpectedTax)}
+                      </div>
                     </div>
-                    <div className="text-slate-700">
-                      ₱{formatPeso(taxEvaluation.totalExpectedTax)}
+                    <div>
+                      <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                        Actual
+                      </div>
+                      <div className="text-slate-700">
+                        ₱{formatPeso(taxEvaluation.totalAllocatedActualTax)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 uppercase tracking-wide">Net Δ</div>
+                      <div
+                        className={
+                          Math.abs(netTaxDelta) > 0.01
+                            ? 'text-red-600 font-semibold'
+                            : 'text-emerald-700 font-semibold'
+                        }
+                      >
+                        ₱{formatPeso(netTaxDelta)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[9px] text-slate-400 uppercase tracking-wide">
+                        BIR lines
+                      </div>
+                      <div className="text-slate-700">
+                        {coveredBirLineCount}/{taxEvaluation.withholdingLineCount}
+                        {taxEvaluation.unallocatedBirCredit > 0.01 && (
+                          <span className="text-amber-700">
+                            {' '}
+                            · ₱{formatPeso(taxEvaluation.unallocatedBirCredit)} uncovered
+                          </span>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <div>
-                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
-                      Actual
-                    </div>
-                    <div className="text-slate-700">
-                      ₱{formatPeso(taxEvaluation.totalAllocatedActualTax)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">Net Δ</div>
-                    <div
-                      className={
-                        Math.abs(netTaxDelta) > 0.01
-                          ? 'text-red-600 font-semibold'
-                          : 'text-emerald-700 font-semibold'
-                      }
-                    >
-                      ₱{formatPeso(netTaxDelta)}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-[9px] text-slate-400 uppercase tracking-wide">
-                      BIR lines
-                    </div>
-                    <div className="text-slate-700">
-                      {coveredBirLineCount}/{taxEvaluation.withholdingLineCount}
-                      {taxEvaluation.unallocatedBirCredit > 0.01 && (
-                        <span className="text-amber-700">
-                          {' '}
-                          · ₱{formatPeso(taxEvaluation.unallocatedBirCredit)} uncovered
-                        </span>
-                      )}
-                    </div>
-                  </div>
-                </div>
+                )}
 
                 {taxEvaluation.doubleCountingConflict && (
                   <div className="p-2 bg-red-50 border border-red-200 rounded text-[11px] text-red-700">
@@ -3328,9 +3404,17 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
           <div className="p-3 border-b border-slate-200">
             <div className="flex items-center justify-between mb-2">
               <span className="text-xs font-medium text-slate-700">Audit Attributes (1–7)</span>
-              <span className="text-[11px] font-mono text-slate-500">
+              <span
+                className={`text-[11px] font-mono ${
+                  activeFlagCount === 0
+                    ? 'text-emerald-700'
+                    : attrCounts.wrong > 0
+                      ? 'text-red-700'
+                      : 'text-amber-800'
+                }`}
+              >
                 {activeFlagCount === 0
-                  ? 'All controls in place'
+                  ? '✓ All controls in place'
                   : [
                       attrCounts.exclamation > 0 ? `${attrCounts.exclamation} !` : '',
                       attrCounts.wrong > 0 ? `${attrCounts.wrong} ✕` : '',

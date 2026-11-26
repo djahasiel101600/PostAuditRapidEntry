@@ -686,7 +686,13 @@ export function computeReconciliationSummary(params: {
   const hasNonZeroLines = classifiedLines.some((l) => l.debit > 0 || l.credit > 0);
   if (!hasNonZeroLines) {
     mathStatus = 'pending_jev';
-    reasons.push('Awaiting JEV encoding (0 JEV lines recorded).');
+    reasons.push(
+      classifiedLines.length > 0
+        ? `Awaiting JEV amounts (${classifiedLines.length} line${
+            classifiedLines.length === 1 ? '' : 's'
+          } recorded at ₱0.00).`
+        : 'Awaiting JEV encoding (no journal lines yet).',
+    );
   } else if (unclassifiedLineIndices.length > 0) {
     mathStatus = 'manual_review';
     reasons.push(
