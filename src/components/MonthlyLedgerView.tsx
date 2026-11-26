@@ -73,7 +73,7 @@ type LedgerColumnKey =
   | 'payee'
   | 'rciNet'
   | 'jevGross'
-  | 'evidence'
+  | 'origCheck'
   | 'attributes'
   | 'dvSig'
   | 'poToCoa'
@@ -114,7 +114,7 @@ const LEDGER_COLUMNS: LedgerColumn[] = [
   { key: 'payee', label: 'Payee', width: 168 },
   { key: 'rciNet', label: 'RCI Net', width: 108 },
   { key: 'jevGross', label: 'JEV Gross', width: 120 },
-  { key: 'evidence', label: 'Evidence', width: 104 },
+  { key: 'origCheck', label: 'Orig. Check', width: 104 },
   { key: 'attributes', label: 'Attributes (1–7)', width: 232 },
   { key: 'dvSig', label: 'DV Sig.', width: 104 },
   { key: 'toc', label: 'Test of Controls', width: 200 },
@@ -729,10 +729,11 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                   JEV Gross (₱)
                 </th>
                 <th
-                  style={freezeStyle('evidence')}
-                  className={`${freezeHeadCls('evidence')} ${edgeCls('evidence')} py-2 px-2.5 text-center`}
+                  style={freezeStyle('origCheck')}
+                  className={`${freezeHeadCls('origCheck')} ${edgeCls('origCheck')} py-2 px-2.5 text-center cursor-help`}
+                  title="Original cancelled check — is the voided instrument on file? Only applies to cancelled checks."
                 >
-                  Evidence
+                  Orig. Check
                 </th>
                 <th
                   style={freezeStyle('attributes')}
@@ -987,8 +988,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            style={freezeStyle('evidence')}
-                            className={`${freezeBodyCls('evidence')} ${edgeCls('evidence')} py-2 px-2 align-top text-center`}
+                            style={freezeStyle('origCheck')}
+                            className={`${freezeBodyCls('origCheck')} ${edgeCls('origCheck')} py-2 px-2 align-top text-center`}
                           >
                             {tx.isCancelled ? (
                               canAudit ? (
