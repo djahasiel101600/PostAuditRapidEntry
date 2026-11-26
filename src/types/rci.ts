@@ -70,8 +70,8 @@ export const AUDIT_ATTRIBUTE_LABELS: Array<{
 
 export interface DvSignatoriesMap {
   a?: AuditAttributeState;
-  b?: AuditAttributeState;
   c?: AuditAttributeState;
+  d?: AuditAttributeState;
 }
 
 export const DV_SIGNATORY_LABELS: Array<{
@@ -79,16 +79,16 @@ export const DV_SIGNATORY_LABELS: Array<{
   letter: string;
   label: string;
 }> = [
-  { key: 'a', letter: 'A', label: 'DV Box A — Certified: expenses necessary/lawful, funds available' },
-  {
-    key: 'b',
-    letter: 'B',
-    label: 'DV Box B — Certified: supporting documents complete and proper',
-  },
+  { key: 'a', letter: 'A', label: 'DV Box A — Certified: Expenses/Cash Advance necessary, lawful and incured under my direct supervision' },
   {
     key: 'c',
     letter: 'C',
-    label: 'DV Box C — Approved by Agency Head / authorized representative',
+    label: 'DV Box C — Certified: supporting documents complete, proper and cash available.',
+  },
+  {
+    key: 'd',
+    letter: 'D',
+    label: 'DV Box D — Approved for Payment',
   },
 ];
 
@@ -162,9 +162,18 @@ export interface TestOfControlsRecord {
 
 export type PaymentMode = 'check' | 'ada';
 
+export type CancelledCheckAttachment = 'attached' | 'missing' | 'na';
+
+export const CANCELLED_CHECK_ATTACHMENT_LABELS: Record<CancelledCheckAttachment, string> = {
+  attached: 'Original cancelled check attached',
+  missing: 'Original cancelled check missing',
+  na: 'N/A (no original check)',
+};
+
 export type TransactionStatus = 'draft' | 'posted' | 'lacking' | 'audited';
 
 export type MathReconciliationStatus =
+  | 'not_applicable'
   | 'pending_jev'
   | 'reconciled'
   | 'discrepancy'
@@ -179,7 +188,11 @@ export type TaxVerificationStatus =
   | 'variance'
   | 'manual_review';
 
-export type DocumentaryVerificationStatus = 'incomplete' | 'complete' | 'lacking';
+export type DocumentaryVerificationStatus =
+  | 'not_applicable'
+  | 'incomplete'
+  | 'complete'
+  | 'lacking';
 
 export type ClerkReviewStatus =
   | 'draft'
@@ -268,7 +281,9 @@ export type VerificationAuditCategory =
   | 'tax_rule_override'
   | 'gross_basis_override'
   | 'legacy_v2_upgrade'
-  | 'clerk_review_decision';
+  | 'clerk_review_decision'
+  | 'cancelled_check_flag'
+  | 'cancelled_check_evidence';
 
 export interface VerificationAuditEvent {
   id: string;
@@ -332,6 +347,9 @@ export interface TransactionRecord {
   procurement?: ProcurementMeta;
   dvSignatories?: DvSignatoriesMap;
   testOfControls?: TestOfControlsRecord;
+  isCancelled?: boolean;
+  cancellationReason?: string;
+  cancelledCheckAttachment?: CancelledCheckAttachment;
   remarks?: string;
   status: TransactionStatus;
   submittedToCoaDate?: string;

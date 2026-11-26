@@ -45,6 +45,7 @@ from .services import (
 TX_AUDIT_FIELDS = {
     'attributes', 'dvSignatories', 'testOfControls', 'remarks', 'status', 'clerkReviewStatus',
     'documentaryStatus', 'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate',
+    'isCancelled', 'cancellationReason',
 }
 TX_FULL_EDIT_FIELDS = {
     'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo', 'dateReceived',
@@ -54,8 +55,9 @@ TX_FULL_EDIT_FIELDS = {
     'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',
     'amountModelVersion', 'legacySnapshot', 'templateId', 'journalLines',
     'isBalanced', 'attributes', 'dvSignatories', 'procurement', 'testOfControls', 'remarks',
-    'status', 'submittedToCoaDate',
+    'status', 'submittedToCoaDate', 'isCancelled', 'cancellationReason',
 }
+CANCELLED_EVIDENCE_FIELDS = {'cancelledCheckAttachment'}
 WORKSPACE_EDIT_FIELDS = {
     'name', 'agencyCode', 'fiscalYear', 'defaultCheckPrefix', 'defaultDvPrefix', 'coaInitialized',
 }
@@ -144,6 +146,13 @@ class TransactionViewSet(WorkspaceNestedViewSet):
             raise ValidationError('New transactions cannot be created as audited.')
         if data.get('clerkReviewStatus') == 'audited':
             raise ValidationError('New transactions cannot have audited clerk review.')
+        if data.get('cancelledCheckAttachment'):
+            user = self.request.user
+            role = get_role(user, self.workspace)
+            if role not in ('admin', 'auditor') and not is_superadmin(user):
+                raise PermissionDenied(
+                    'Only auditors/admins may record cancelled-check attachment evidence.'
+                )
         serializer.save()
 
     def _apply_patch(self, request, instance):
@@ -177,6 +186,12 @@ class TransactionViewSet(WorkspaceNestedViewSet):
                 allowed = TX_FULL_EDIT_FIELDS
 
         changed = changed_keys(instance, data)
+        if role in ('admin', 'auditor') or is_superadmin(user):
+            allowed = allowed | CANCELLED_EVIDENCE_FIELDS
+        elif changed & CANCELLED_EVIDENCE_FIELDS:
+            raise PermissionDenied(
+                'Only auditors/admins may record cancelled-check attachment evidence.'
+            )
         if not changed <= allowed:
             raise PermissionDenied('Field not editable for this transaction state/role.')
         serializer.save()
@@ -218,6 +233,15 @@ class TransactionViewSet(WorkspaceNestedViewSet):
             for item in items:
                 if item.get('status') == 'audited' or item.get('clerkReviewStatus') == 'audited':
                     raise ValidationError('Batch items cannot be audited.')
+                if item.get('cancelledCheckAttachment'):
+                    raise ValidationError(
+                        'Cancelled-check attachment evidence must be recorded in the ledger, not in batch.'
+                    )
+                item_id = item.get('id')
+                if item_id and Transaction.objects.filter(
+                    pk=item_id, workspace=workspace, status='audited'
+                ).exists():
+                    raise ValidationError('Batch cannot modify audited transactions.')
                 record, was_created = self.upsert(item, request, workspace)
                 records.append(record)
                 created += 1 if was_created else 0

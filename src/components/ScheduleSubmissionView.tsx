@@ -2,7 +2,13 @@ import React, { useMemo, useState } from 'react';
 import { CalendarCheck2, Check, Download } from 'lucide-react';
 import { useAuthWorkspace } from '../contexts/AuthWorkspaceContext';
 import { exportWorkingPaperWorkbook } from '../lib/excelExport';
-import { formatPeso, getDisplayRciNetAmount } from '../lib/taxAndLedger';
+import {
+  formatPeso,
+  getDisplayRciNetAmount,
+  isJevExempt,
+  isJevPending,
+  NO_JEV_CANCELLED_LABEL,
+} from '../lib/taxAndLedger';
 import { MONTHS } from '../types/rci';
 
 export const ScheduleSubmissionView: React.FC = () => {
@@ -151,7 +157,8 @@ export const ScheduleSubmissionView: React.FC = () => {
               ) : (
                 monthRows.map((tx) => {
                   const checked = selectedIds.includes(tx.id);
-                  const isPendingJev = tx.journalLines.length === 0 && tx.grossAmount === 0;
+                  const jevExempt = isJevExempt(tx);
+                  const isPendingJev = isJevPending(tx);
                   return (
                     <tr key={tx.id} className={checked ? 'bg-blue-50/50' : 'hover:bg-slate-50'}>
                       <td className="py-2.5 px-3">
@@ -163,7 +170,7 @@ export const ScheduleSubmissionView: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-500">{tx.sequenceNo}</td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-800">
-                        {tx.jevNoDate || 'Pending JEV'}
+                        {tx.jevNoDate || (jevExempt ? NO_JEV_CANCELLED_LABEL : 'Pending JEV')}
                       </td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-900">
                         {tx.adaCheckNo}
@@ -173,13 +180,27 @@ export const ScheduleSubmissionView: React.FC = () => {
                         ₱{formatPeso(getDisplayRciNetAmount(tx))}
                       </td>
                       <td className="py-2.5 px-3 text-right font-mono tabular-nums text-slate-900">
-                        {isPendingJev ? (
+                        {jevExempt && tx.journalLines.length === 0 ? (
+                          <span
+                            className="text-[11px] font-sans text-slate-400"
+                            title="Cancelled check — no JEV entry will be encoded"
+                          >
+                            —
+                          </span>
+                        ) : isPendingJev ? (
                           <span className="text-[11px] font-sans text-amber-700">Pending JEV</span>
                         ) : (
                           `₱${formatPeso(tx.grossAmount)}`
                         )}
                       </td>
-                      <td className="py-2.5 px-3 capitalize text-slate-700">{tx.status}</td>
+                      <td className="py-2.5 px-3 text-slate-700">
+                        <span className="capitalize">{tx.status}</span>
+                        {tx.isCancelled && (
+                          <span className="ml-1.5 inline-flex items-center px-1.5 py-0.5 rounded border border-rose-300 bg-rose-50 text-[10px] font-semibold text-rose-700">
+                            CANCELLED
+                          </span>
+                        )}
+                      </td>
                       <td className="py-2.5 px-3 font-mono tabular-nums">
                         {tx.submittedToCoaDate ? (
                           <span className="inline-flex items-center gap-1 text-emerald-700 font-medium">

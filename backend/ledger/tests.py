@@ -171,6 +171,48 @@ class TransactionRuleTests(WorkspaceTestBase):
         self.assertEqual(response.data['created'], 3)
         self.assertEqual(Transaction.objects.filter(workspace=self.workspace).count(), 3)
 
+    def test_batch_defaults_payment_mode_and_accepts_ada(self):
+        # Legacy Batch Paste payloads omitted paymentMode entirely; the server
+        # must persist the default instead of failing the NOT NULL constraint.
+        self.as_user(self.encoder)
+        items = [
+            tx_payload(self.workspace.id, 'tx-b-check', sequenceNo=1),
+            tx_payload(self.workspace.id, 'tx-b-ada', sequenceNo=2, paymentMode='ada'),
+        ]
+        response = self.client.post(self.tx_url + 'batch/', {'items': items}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(Transaction.objects.get(pk='tx-b-check').paymentMode, 'check')
+        self.assertEqual(Transaction.objects.get(pk='tx-b-ada').paymentMode, 'ada')
+
+    def test_batch_accepts_jev_exempt_cancelled_rows(self):
+        # Cancelled checks are JEV-exempt: zero journal lines, blank payee/nature,
+        # and not_applicable verification statuses must round-trip via Batch Paste.
+        self.as_user(self.encoder)
+        item = tx_payload(
+            self.workspace.id,
+            'tx-b-cancelled',
+            payeeName='',
+            natureOfTransaction='',
+            grossAmount=0,
+            netAmount=0,
+            taxWithheld=0,
+            journalLines=[],
+            status='draft',
+            isCancelled=True,
+            mathStatus='not_applicable',
+            taxStatus='not_applicable',
+            documentaryStatus='not_applicable',
+            remarks='',
+        )
+        response = self.client.post(self.tx_url + 'batch/', {'items': [item]}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        stored = Transaction.objects.get(pk='tx-b-cancelled')
+        self.assertTrue(stored.isCancelled)
+        self.assertEqual(stored.mathStatus, 'not_applicable')
+        self.assertEqual(stored.taxStatus, 'not_applicable')
+        self.assertEqual(stored.documentaryStatus, 'not_applicable')
+        self.assertEqual(stored.remarks, '')
+
     def test_server_owns_created_by_and_authorized_uids(self):
         self.as_user(self.encoder)
         response = self.client.post(
@@ -299,6 +341,213 @@ class TransactionRuleTests(WorkspaceTestBase):
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(Transaction.objects.get(pk='tx-1').paymentMode, 'ada')
+
+
+class CancelledCheckTests(WorkspaceTestBase):
+    """Recording, evidence permissions, and batch guards for cancelled checks."""
+
+    def test_encoder_records_cancelled_check_with_reason(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(
+            self.workspace.id,
+            isCancelled=True,
+            cancellationReason='Cancelled per agency RCI — replaced by check 3967050.',
+        )
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertTrue(stored.isCancelled)
+        self.assertEqual(
+            stored.cancellationReason, 'Cancelled per agency RCI — replaced by check 3967050.'
+        )
+        # Workflow status is untouched by the cancellation flag.
+        self.assertEqual(stored.status, 'posted')
+
+    def test_attachment_evidence_is_auditor_admin_only(self):
+        # Encoder cannot attach evidence at creation time.
+        self.as_user(self.encoder)
+        payload = tx_payload(
+            self.workspace.id, isCancelled=True, cancelledCheckAttachment='attached'
+        )
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Encoder can record the cancelled check itself, then gets blocked on evidence.
+        self.client.post(
+            self.tx_url, tx_payload(self.workspace.id, isCancelled=True), format='json'
+        )
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'cancelledCheckAttachment': 'attached'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        # Auditors may record evidence and append cancellation audit events.
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {
+                'cancelledCheckAttachment': 'attached',
+                'verificationAuditTrail': [
+                    {
+                        'id': 'evt-cc-1',
+                        'category': 'cancelled_check_evidence',
+                        'reason': 'Original cancelled check attached',
+                    }
+                ],
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').cancelledCheckAttachment, 'attached')
+
+    def test_attachment_on_non_cancelled_row_rejected(self):
+        self.as_user(self.auditor)
+        response = self.client.post(
+            self.tx_url,
+            tx_payload(self.workspace.id, cancelledCheckAttachment='attached'),
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'cancelledCheckAttachment': 'missing'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_uncancel_clears_attachment_but_keeps_reason(self):
+        self.as_user(self.auditor)
+        self.client.post(
+            self.tx_url,
+            tx_payload(
+                self.workspace.id,
+                isCancelled=True,
+                cancellationReason='Spoiled per RCI',
+                cancelledCheckAttachment='attached',
+            ),
+            format='json',
+        )
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'isCancelled': False}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertFalse(stored.isCancelled)
+        self.assertEqual(stored.cancelledCheckAttachment, '')
+        self.assertEqual(stored.cancellationReason, 'Spoiled per RCI')
+
+    def test_audited_row_cancellation_flag_rbac(self):
+        self.as_user(self.encoder)
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'status': 'audited', 'clerkReviewStatus': 'audited'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.as_user(self.encoder)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'isCancelled': True}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'isCancelled': True, 'cancellationReason': 'Cancelled after audit review'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(Transaction.objects.get(pk='tx-1').isCancelled)
+
+    def test_batch_records_cancelled_but_rejects_attachment(self):
+        self.as_user(self.encoder)
+        items = [
+            tx_payload(
+                self.workspace.id,
+                'tx-c1',
+                isCancelled=True,
+                cancellationReason='Cancelled per RCI',
+            ),
+            tx_payload(self.workspace.id, 'tx-c2', sequenceNo=2),
+        ]
+        response = self.client.post(self.tx_url + 'batch/', {'items': items}, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertTrue(Transaction.objects.get(pk='tx-c1').isCancelled)
+        self.assertFalse(Transaction.objects.get(pk='tx-c2').isCancelled)
+
+        bad_items = [
+            tx_payload(
+                self.workspace.id,
+                'tx-c3',
+                isCancelled=True,
+                cancelledCheckAttachment='attached',
+            )
+        ]
+        response = self.client.post(
+            self.tx_url + 'batch/', {'items': bad_items}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Transaction.objects.filter(pk='tx-c3').exists())
+
+    def test_batch_cannot_modify_audited_transactions(self):
+        self.as_user(self.encoder)
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'status': 'audited', 'clerkReviewStatus': 'audited'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        self.as_user(self.encoder)
+        response = self.client.post(
+            self.tx_url + 'batch/',
+            {'items': [{'id': 'tx-1', 'remarks': 'bulk overwrite'}]},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').remarks, '')
+
+    def test_cancelled_row_stores_truly_blank_details(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(
+            self.workspace.id,
+            isCancelled=True,
+            payeeName='',
+            dvNo='',
+            natureOfTransaction='',
+            status='draft',
+            journalLines=[],
+            isBalanced=False,
+        )
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertEqual(stored.payeeName, '')
+        self.assertEqual(stored.dvNo, '')
+        self.assertEqual(stored.natureOfTransaction, '')
+        self.assertTrue(stored.isCancelled)
+
+        # Un-cancelling turns it back into an active row and requires a payee.
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'isCancelled': False}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_non_cancelled_blank_payee_rejected(self):
+        self.as_user(self.encoder)
+        response = self.client.post(
+            self.tx_url, tx_payload(self.workspace.id, payeeName=''), format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertFalse(Transaction.objects.filter(pk='tx-1').exists())
 
 
 class CoaAndTaxPresetTests(WorkspaceTestBase):

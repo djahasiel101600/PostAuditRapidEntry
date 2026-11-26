@@ -10,17 +10,24 @@ import {
   formatPeso,
   getDisplayRciNetAmount,
   hasFlaggedAttribute,
+  isCancelledTransaction,
+  isJevExempt,
+  isJevPending,
   isLegacyTransaction,
   normalizePaymentMode,
+  NO_JEV_CANCELLED_LABEL,
   paymentModeLabel,
   sanitizeVerificationAuditTrail,
+  summarizeLedgerTotals,
 } from '../lib/taxAndLedger';
 import {
   AUDIT_ATTRIBUTE_LABELS,
+  CANCELLED_CHECK_ATTACHMENT_LABELS,
   DV_SIGNATORY_LABELS,
   MONTHS,
   type AuditAttributesMap,
   type AuditAttributeState,
+  type CancelledCheckAttachment,
   type DvSignatoriesMap,
   type MonthName,
   type TestOfControlsStatus,
@@ -62,7 +69,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
   } = useAuthWorkspace();
 
   const [showPurchases, setShowPurchases] = useState(false);
-  const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<'all' | TransactionStatus | 'cancelled'>('all');
   const [searchQuery, setSearchQuery] = useState('');
   const [editingRemarksId, setEditingRemarksId] = useState<string | null>(null);
   const [remarksDraft, setRemarksDraft] = useState('');
@@ -74,28 +81,24 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
     const q = searchQuery.trim().toLowerCase();
     return transactions.filter((tx) => {
       if (tx.month !== selectedMonth) return false;
-      if (statusFilter !== 'all' && tx.status !== statusFilter) return false;
+      if (statusFilter === 'cancelled') {
+        if (!isCancelledTransaction(tx)) return false;
+      } else if (statusFilter !== 'all' && tx.status !== statusFilter) {
+        return false;
+      }
       if (!q) return true;
       return (
         tx.payeeName.toLowerCase().includes(q) ||
         tx.adaCheckNo.toLowerCase().includes(q) ||
         tx.dvNo.toLowerCase().includes(q) ||
         (tx.jevNoDate || '').toLowerCase().includes(q) ||
-        (tx.remarks || '').toLowerCase().includes(q)
+        (tx.remarks || '').toLowerCase().includes(q) ||
+        (tx.cancellationReason || '').toLowerCase().includes(q)
       );
     });
   }, [transactions, selectedMonth, statusFilter, searchQuery]);
 
-  const monthTotals = useMemo(() => {
-    return monthRows.reduce(
-      (acc, tx) => ({
-        gross: acc.gross + tx.grossAmount,
-        net: acc.net + getDisplayRciNetAmount(tx),
-        tax: acc.tax + tx.taxWithheld,
-      }),
-      { gross: 0, net: 0, tax: 0 },
-    );
-  }, [monthRows]);
+  const monthTotals = useMemo(() => summarizeLedgerTotals(monthRows), [monthRows]);
 
   const handleChangeAttr = async (
     tx: TransactionRecord,
@@ -139,6 +142,29 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
     if (tx.status === 'audited' && activeRole === 'encoder') return;
     await updateTransaction(tx.id, {
       dvSignatories: { ...(tx.dvSignatories || {}), [key]: nextVal },
+    });
+  };
+
+  const handleChangeCancelledEvidence = async (
+    tx: TransactionRecord,
+    next: CancelledCheckAttachment | '',
+  ) => {
+    const previousLabel = tx.cancelledCheckAttachment
+      ? CANCELLED_CHECK_ATTACHMENT_LABELS[tx.cancelledCheckAttachment]
+      : 'Pending verification';
+    const evt = createVerificationAuditEvent({
+      actorUid: user?.uid || 'system',
+      actorName: user?.displayName || user?.email || 'Auditor',
+      category: 'cancelled_check_evidence',
+      targetRef: tx.adaCheckNo || `#${tx.sequenceNo}`,
+      previousValue: previousLabel,
+      newValue: next ? CANCELLED_CHECK_ATTACHMENT_LABELS[next] : 'Pending verification',
+      reason: `Post-audit cancelled-check evidence set to ${next || 'pending verification'}`,
+    });
+    const trail = sanitizeVerificationAuditTrail([...(tx.verificationAuditTrail || []), evt]);
+    await updateTransaction(tx.id, {
+      cancelledCheckAttachment: next,
+      verificationAuditTrail: trail,
     });
   };
 
@@ -254,7 +280,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
       <div className="bg-slate-50 border-b border-slate-200 px-5 py-2 flex flex-wrap items-center justify-between gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <div className="flex items-center gap-1 p-0.5 bg-white border border-slate-200 rounded">
-            {(['all', 'posted', 'lacking', 'audited', 'draft'] as const).map((st) => (
+            {(['all', 'posted', 'lacking', 'audited', 'draft', 'cancelled'] as const).map((st) => (
               <button
                 key={st}
                 type="button"
@@ -291,6 +317,15 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
             <span>Tax: ₱{formatPeso(monthTotals.tax)}</span>
             <span aria-hidden="true">·</span>
             <span className="text-slate-900 font-semibold">RCI Net: ₱{formatPeso(monthTotals.net)}</span>
+            {monthTotals.cancelledCount > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-rose-700 font-semibold">
+                  Cancelled: {monthTotals.cancelledCount} (₱{formatPeso(monthTotals.cancelledNet)}{' '}
+                  excluded)
+                </span>
+              </>
+            )}
           </div>
           <input
             type="search"
@@ -323,6 +358,9 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                 <th className="py-2 px-2.5 border-r border-slate-200 w-40">Payee</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">RCI Net Paid</th>
                 <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">JEV Gross</th>
+                <th className="py-2 px-2.5 border-r border-slate-200 text-center w-24">
+                  Evidence
+                </th>
                 <th className="py-2 px-2.5 border-r border-slate-200 text-center w-48">
                   Attributes (1–7 · ELAS)
                 </th>
@@ -375,10 +413,18 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
             <tbody>
               {monthRows.map((tx) => {
                 const hasJevLines = tx.journalLines.length > 0;
+                const jevExempt = isJevExempt(tx);
                 const lines = hasJevLines
                   ? tx.journalLines
-                  : [{ accountCode: '—', accountTitle: 'Pending JEV encoding', debit: 0, credit: 0 }];
-                const isPendingJev = !hasJevLines && tx.grossAmount === 0;
+                  : [
+                      {
+                        accountCode: '—',
+                        accountTitle: jevExempt ? NO_JEV_CANCELLED_LABEL : 'Pending JEV encoding',
+                        debit: 0,
+                        credit: 0,
+                      },
+                    ];
+                const isPendingJev = isJevPending(tx);
                 const legacy = isLegacyTransaction(tx);
 
                 return lines.map((line, lineIdx) => {
@@ -436,18 +482,86 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                             rowSpan={rowSpan}
                             className="py-2 px-2.5 border-r border-slate-200 align-top text-right font-mono tabular-nums font-semibold text-emerald-800 whitespace-nowrap"
                           >
-                            {formatPeso(getDisplayRciNetAmount(tx))}
+                            {tx.isCancelled && (
+                              <span className="mb-0.5 block text-[10px] font-sans font-semibold text-rose-700">
+                                CANCELLED
+                              </span>
+                            )}
+                            <span
+                              className={tx.isCancelled ? 'line-through text-slate-400' : ''}
+                              title={
+                                tx.isCancelled ? 'Cancelled check — excluded from totals' : undefined
+                              }
+                            >
+                              {formatPeso(getDisplayRciNetAmount(tx))}
+                            </span>
                           </td>
                           <td
                             rowSpan={rowSpan}
                             className="py-2 px-2.5 border-r border-slate-200 align-top text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap"
                           >
-                            {isPendingJev ? (
+                            {jevExempt && !hasJevLines ? (
+                              <span
+                                className="text-[11px] font-sans font-normal text-slate-400"
+                                title="Cancelled check — no JEV entry will be encoded"
+                              >
+                                —
+                              </span>
+                            ) : isPendingJev ? (
                               <span className="text-[11px] font-sans font-normal text-amber-700">
                                 Pending JEV
                               </span>
                             ) : (
-                              formatPeso(tx.grossAmount)
+                              <span className={tx.isCancelled ? 'line-through text-slate-400' : ''}>
+                                {formatPeso(tx.grossAmount)}
+                              </span>
+                            )}
+                          </td>
+                          <td
+                            rowSpan={rowSpan}
+                            className="py-2 px-2 border-r border-slate-200 align-top text-center"
+                          >
+                            {tx.isCancelled ? (
+                              canAudit ? (
+                                <select
+                                  value={tx.cancelledCheckAttachment || ''}
+                                  onChange={(e) =>
+                                    void handleChangeCancelledEvidence(
+                                      tx,
+                                      e.target.value as CancelledCheckAttachment | '',
+                                    )
+                                  }
+                                  title={tx.cancellationReason || 'Original cancelled check on file?'}
+                                  className="w-full max-w-[104px] h-7 px-1 text-[10px] border border-rose-200 rounded bg-white text-slate-700"
+                                >
+                                  <option value="">Pending</option>
+                                  <option value="attached">Attached</option>
+                                  <option value="missing">Missing</option>
+                                  <option value="na">N/A</option>
+                                </select>
+                              ) : (
+                                <span
+                                  className={`text-[10px] font-medium ${
+                                    tx.cancelledCheckAttachment === 'missing'
+                                      ? 'text-red-600'
+                                      : tx.cancelledCheckAttachment === 'attached'
+                                        ? 'text-emerald-700'
+                                        : tx.cancelledCheckAttachment === 'na'
+                                          ? 'text-slate-500'
+                                          : 'text-amber-700'
+                                  }`}
+                                >
+                                  {tx.cancelledCheckAttachment
+                                    ? tx.cancelledCheckAttachment === 'attached'
+                                      ? 'Attached'
+                                      : tx.cancelledCheckAttachment === 'missing'
+                                        ? 'Missing'
+                                        : 'N/A'
+                                    : 'Pending'}
+                                </span>
+                              )
+                            ) : (
+                              <span className="text-slate-300">—</span>
                             )}
                           </td>
                           <td
@@ -749,29 +863,41 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               {!legacy && (
                                 <span
                                   className={`text-[10px] font-mono ${
-                                    tx.mathStatus === 'discrepancy' || tx.taxStatus === 'variance'
-                                      ? 'text-red-600 font-semibold'
-                                      : tx.mathStatus === 'manual_review' ||
-                                          tx.taxStatus === 'manual_review'
-                                        ? 'text-amber-700'
-                                        : tx.mathStatus === 'reconciled'
-                                          ? 'text-emerald-700'
-                                          : 'text-slate-400'
+                                    jevExempt
+                                      ? 'text-slate-400'
+                                      : tx.mathStatus === 'discrepancy' || tx.taxStatus === 'variance'
+                                        ? 'text-red-600 font-semibold'
+                                        : tx.mathStatus === 'manual_review' ||
+                                            tx.taxStatus === 'manual_review'
+                                          ? 'text-amber-700'
+                                          : tx.mathStatus === 'reconciled'
+                                            ? 'text-emerald-700'
+                                            : 'text-slate-400'
                                   }`}
-                                  title={`Math: ${tx.mathStatus || 'pending_jev'} · Tax: ${tx.taxStatus || 'pending_base'} · Doc: ${tx.documentaryStatus || 'incomplete'}`}
+                                  title={
+                                    jevExempt
+                                      ? 'Cancelled check — no JEV entry will be encoded'
+                                      : `Math: ${tx.mathStatus || 'pending_jev'} · Tax: ${tx.taxStatus || 'pending_base'} · Doc: ${tx.documentaryStatus || 'incomplete'}`
+                                  }
                                 >
-                                  {tx.mathStatus === 'reconciled'
-                                    ? 'M:OK'
-                                    : tx.mathStatus === 'discrepancy'
-                                      ? 'M:Δ'
-                                      : tx.mathStatus === 'manual_review'
-                                        ? 'M:REV'
-                                        : 'M:PND'}
-                                  {tx.taxStatus === 'verified'
-                                    ? '·T:OK'
-                                    : tx.taxStatus === 'variance'
-                                      ? '·T:Δ'
-                                      : ''}
+                                  {jevExempt ? (
+                                    'JEV-exempt'
+                                  ) : (
+                                    <>
+                                      {tx.mathStatus === 'reconciled'
+                                        ? 'M:OK'
+                                        : tx.mathStatus === 'discrepancy'
+                                          ? 'M:Δ'
+                                          : tx.mathStatus === 'manual_review'
+                                            ? 'M:REV'
+                                            : 'M:PND'}
+                                      {tx.taxStatus === 'verified'
+                                        ? '·T:OK'
+                                        : tx.taxStatus === 'variance'
+                                          ? '·T:Δ'
+                                          : ''}
+                                    </>
+                                  )}
                                 </span>
                               )}
                               <div className="flex items-center gap-1">

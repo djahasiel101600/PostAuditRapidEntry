@@ -13,8 +13,11 @@ import {
   deriveClerkReviewStatus,
   formatPeso,
   getDisplayRciNetAmount,
+  isCancelledTransaction,
+  isJevPending,
   isLegacyTransaction,
   normalizeAttributeState,
+  NO_JEV_CANCELLED_LABEL,
 } from '../lib/taxAndLedger';
 import {
   AUDIT_ATTRIBUTE_LABELS,
@@ -26,7 +29,7 @@ interface LackingQueueViewProps {
   onEditInRapidEntry: (tx: TransactionRecord) => void;
 }
 
-type QueueTab = 'all' | 'exclamation' | 'wrong' | 'reconciliation' | 'integrity';
+type QueueTab = 'all' | 'exclamation' | 'wrong' | 'reconciliation' | 'integrity' | 'cancelled';
 
 interface CategorizedException {
   tx: TransactionRecord;
@@ -37,6 +40,7 @@ interface CategorizedException {
   hasUnder3Rfq: boolean;
   hasMathDiscrepancy: boolean;
   hasTaxVariance: boolean;
+  needsCancelledEvidence: boolean;
 }
 
 export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapidEntry }) => {
@@ -75,6 +79,9 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
         (tx.taxStatus === 'variance' ||
           tx.taxStatus === 'manual_review' ||
           tx.taxStatus === 'incomplete_evidence');
+      const needsCancelledEvidence =
+        isCancelledTransaction(tx) &&
+        (!tx.cancelledCheckAttachment || tx.cancelledCheckAttachment === 'missing');
 
       if (
         tx.status === 'lacking' ||
@@ -83,7 +90,8 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
         isDup ||
         isUnbalanced ||
         hasMathDiscrepancy ||
-        hasTaxVariance
+        hasTaxVariance ||
+        needsCancelledEvidence
       ) {
         items.push({
           tx,
@@ -94,6 +102,7 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
           hasUnder3Rfq,
           hasMathDiscrepancy,
           hasTaxVariance,
+          needsCancelledEvidence,
         });
       }
     }
@@ -105,11 +114,13 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
     let wrong = 0;
     let reconciliation = 0;
     let integrity = 0;
+    let cancelled = 0;
     for (const item of categorizedItems) {
       if (item.exclamationAttrs.length > 0) exclamation += 1;
       if (item.wrongAttrs.length > 0) wrong += 1;
       if (item.hasMathDiscrepancy || item.hasTaxVariance) reconciliation += 1;
       if (item.isDup || item.isUnbalanced) integrity += 1;
+      if (item.needsCancelledEvidence) cancelled += 1;
     }
     return {
       all: categorizedItems.length,
@@ -117,6 +128,7 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
       wrong,
       reconciliation,
       integrity,
+      cancelled,
     };
   }, [categorizedItems]);
 
@@ -132,6 +144,9 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
       return categorizedItems.filter(
         (item) => item.hasMathDiscrepancy || item.hasTaxVariance,
       );
+    }
+    if (activeTab === 'cancelled') {
+      return categorizedItems.filter((item) => item.needsCancelledEvidence);
     }
     return categorizedItems.filter((item) => item.isDup || item.isUnbalanced);
   }, [categorizedItems, activeTab]);
@@ -191,6 +206,12 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
       label: 'Check / Balance Issues',
       count: tabCounts.integrity,
       accentClass: 'text-red-700',
+    },
+    {
+      id: 'cancelled',
+      label: 'Cancelled Checks',
+      count: tabCounts.cancelled,
+      accentClass: 'text-rose-700',
     },
   ];
 
@@ -280,6 +301,7 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
                     hasUnder3Rfq,
                     hasMathDiscrepancy,
                     hasTaxVariance,
+                    needsCancelledEvidence,
                   }) => (
                     <tr key={tx.id} className="hover:bg-slate-50">
                       <td className="py-3 px-3 align-top whitespace-nowrap">
@@ -301,9 +323,15 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
                           RCI ₱{formatPeso(getDisplayRciNetAmount(tx))}
                         </div>
                         <div className="text-[11px] text-slate-500">
-                          {tx.journalLines.length === 0 && tx.grossAmount === 0
-                            ? 'Pending JEV'
-                            : `JEV ₱${formatPeso(tx.grossAmount)}`}
+                          {isCancelledTransaction(tx) && tx.journalLines.length === 0 ? (
+                            <span title="Cancelled check — no JEV entry will be encoded">
+                              {NO_JEV_CANCELLED_LABEL}
+                            </span>
+                          ) : isJevPending(tx) ? (
+                            'Pending JEV'
+                          ) : (
+                            `JEV ₱${formatPeso(tx.grossAmount)}`
+                          )}
                         </div>
                       </td>
                       <td className="py-3 px-3 align-top space-y-1.5 min-w-[260px]">
@@ -373,27 +401,44 @@ export const LackingQueueView: React.FC<LackingQueueViewProps> = ({ onEditInRapi
                             <span>RFQ (3): Only 1–2 quotations attached (exports blank)</span>
                           </div>
                         )}
+                        {needsCancelledEvidence && (
+                          <div className="flex items-start gap-1.5 text-rose-700 font-medium">
+                            <AlertCircle className="w-3.5 h-3.5 text-rose-600 shrink-0 mt-0.5" />
+                            <span>
+                              Cancelled check — original check{' '}
+                              {tx.cancelledCheckAttachment === 'missing'
+                                ? 'missing'
+                                : 'not yet verified'}
+                            </span>
+                          </div>
+                        )}
                       </td>
                       <td className="py-3 px-3 align-top text-slate-600 max-w-[240px] whitespace-pre-line">
                         {tx.remarks || '—'}
                       </td>
                       <td className="py-3 px-3 align-top text-right whitespace-nowrap">
                         <div className="inline-flex items-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setResolvingTx(tx);
-                              setRemarkText(tx.remarks || 'complete');
-                            }}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer whitespace-nowrap shrink-0"
-                          >
-                            <Check className="w-3.5 h-3.5" />
-                            <span>Resolve</span>
-                          </button>
+                          {!needsCancelledEvidence && (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setResolvingTx(tx);
+                                setRemarkText(tx.remarks || 'complete');
+                              }}
+                              className="inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium bg-emerald-600 text-white rounded hover:bg-emerald-700 cursor-pointer whitespace-nowrap shrink-0"
+                            >
+                              <Check className="w-3.5 h-3.5" />
+                              <span>Resolve</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => onEditInRapidEntry(tx)}
-                            title="Edit in Rapid Entry"
+                            title={
+                              needsCancelledEvidence
+                                ? 'Open in Rapid Entry to record the original cancelled check evidence'
+                                : 'Edit in Rapid Entry'
+                            }
                             className="p-1 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
                           >
                             <Pencil className="w-3.5 h-3.5" />

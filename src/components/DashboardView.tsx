@@ -6,7 +6,9 @@ import {
   formatPeso,
   getDisplayRciNetAmount,
   hasFlaggedAttribute,
+  isCancelledTransaction,
   isLegacyTransaction,
+  summarizeLedgerTotals,
 } from '../lib/taxAndLedger';
 import { MONTHS, type MonthName, type ViewModule } from '../types/rci';
 
@@ -55,17 +57,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
   const metrics = useMemo(() => {
     const todayStr = new Date().toISOString().slice(0, 10);
     let todayCount = 0;
-    let totalGross = 0;
-    let totalNet = 0;
-    let totalTax = 0;
     let lackingCount = 0;
     let draftCount = 0;
     let auditedCount = 0;
 
     for (const tx of transactions) {
-      totalGross += tx.grossAmount;
-      totalNet += getDisplayRciNetAmount(tx);
-      totalTax += tx.taxWithheld;
       const v2Alert =
         !isLegacyTransaction(tx) &&
         (tx.mathStatus === 'discrepancy' ||
@@ -87,12 +83,16 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
       }
     }
 
+    const totals = summarizeLedgerTotals(transactions);
+
     return {
       todayCount,
       totalCount: transactions.length,
-      totalGross,
-      totalNet,
-      totalTax,
+      totalGross: totals.gross,
+      totalNet: totals.net,
+      totalTax: totals.tax,
+      cancelledCount: totals.cancelledCount,
+      cancelledNet: totals.cancelledNet,
       lackingCount,
       draftCount,
       auditedCount,
@@ -102,12 +102,14 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
   const monthlyBreakdown = useMemo(() => {
     return MONTHS.map((m: MonthName) => {
       const rows = transactions.filter((t) => t.month === m);
+      const totals = summarizeLedgerTotals(rows);
       return {
         month: m,
         count: rows.length,
-        gross: rows.reduce((s, r) => s + r.grossAmount, 0),
-        net: rows.reduce((s, r) => s + getDisplayRciNetAmount(r), 0),
-        tax: rows.reduce((s, r) => s + r.taxWithheld, 0),
+        gross: totals.gross,
+        net: totals.net,
+        tax: totals.tax,
+        cancelled: totals.cancelledCount,
         lacking: rows.filter((r) => {
           const v2Alert =
             !isLegacyTransaction(r) &&
@@ -125,6 +127,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
   const topPayees = useMemo(() => {
     const map = new Map<string, { name: string; count: number; rciNet: number }>();
     for (const tx of transactions) {
+      if (isCancelledTransaction(tx)) continue;
       const key = tx.payeeName.trim();
       const prev = map.get(key) || { name: key, count: 0, rciNet: 0 };
       prev.count += 1;
@@ -191,6 +194,11 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
           <p className="text-[11px] text-slate-500 mt-2 font-mono tabular-nums">
             JEV Gross Encoded: ₱{formatPeso(metrics.totalGross)}
           </p>
+          {metrics.cancelledCount > 0 && (
+            <p className="text-[11px] text-rose-600 mt-1 font-mono tabular-nums">
+              {metrics.cancelledCount} cancelled excluded (₱{formatPeso(metrics.cancelledNet)})
+            </p>
+          )}
         </div>
 
         <div className="bg-white border border-slate-200 rounded-lg p-4">
@@ -242,6 +250,7 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
                 <th className="py-2 px-3 text-right">RCI Net Cash</th>
                 <th className="py-2 px-3 text-right">JEV Gross</th>
                 <th className="py-2 px-3 text-right">Tax Withheld</th>
+                <th className="py-2 px-3 text-right">Cancelled</th>
                 <th className="py-2 px-3 text-right">Exceptions</th>
                 <th className="py-2 px-4 text-right">Audited</th>
               </tr>
@@ -268,6 +277,9 @@ export const DashboardView: React.FC<DashboardViewProps> = ({ onNavigate, onOpen
                   </td>
                   <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-600">
                     {row.tax > 0 ? `₱${formatPeso(row.tax)}` : '—'}
+                  </td>
+                  <td className="py-2 px-3 text-right font-mono tabular-nums text-rose-600">
+                    {row.cancelled > 0 ? row.cancelled : '—'}
                   </td>
                   <td
                     className={`py-2 px-3 text-right font-mono tabular-nums ${

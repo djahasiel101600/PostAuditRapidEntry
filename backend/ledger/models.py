@@ -95,6 +95,11 @@ class WorkspaceRecord(TimestampedModel):
 
 
 PAYMENT_MODE_CHOICES = (('check', 'Check'), ('ada', 'ADA'))
+CANCELLED_CHECK_ATTACHMENT_CHOICES = (
+    ('attached', 'Attached'),
+    ('missing', 'Missing'),
+    ('na', 'N/A'),
+)
 
 
 class Transaction(WorkspaceRecord):
@@ -107,7 +112,9 @@ class Transaction(WorkspaceRecord):
     orNoDate = models.CharField(max_length=40, blank=True, default='')
     asaNo = models.CharField(max_length=40, blank=True, default='')
     jevNoDate = models.CharField(max_length=50, blank=True, default='')
-    payeeName = models.CharField(max_length=180)
+    # Cancelled checks may be recorded with only date + serial; blank payee is
+    # rejected for active rows in TransactionSerializer.validate().
+    payeeName = models.CharField(max_length=180, blank=True, default='')
     natureOfTransaction = models.CharField(max_length=500, blank=True, default='')
     grossAmount = models.FloatField()
     netAmount = models.FloatField()
@@ -130,7 +137,16 @@ class Transaction(WorkspaceRecord):
     dvSignatories = models.JSONField(null=True, blank=True)
     procurement = models.JSONField(null=True, blank=True)
     testOfControls = models.JSONField(null=True, blank=True)
-    paymentMode = models.CharField(max_length=8, choices=PAYMENT_MODE_CHOICES, default='check')
+    # db_default keeps legacy/offline clients that omit the key from failing the
+    # NOT NULL constraint (batch upsert writes every column explicitly).
+    paymentMode = models.CharField(
+        max_length=8, choices=PAYMENT_MODE_CHOICES, default='check', db_default='check'
+    )
+    isCancelled = models.BooleanField(default=False)
+    cancellationReason = models.CharField(max_length=200, blank=True, default='')
+    cancelledCheckAttachment = models.CharField(
+        max_length=10, choices=CANCELLED_CHECK_ATTACHMENT_CHOICES, blank=True, default=''
+    )
     remarks = models.CharField(max_length=800, blank=True, default='')
     status = models.CharField(max_length=10)
     submittedToCoaDate = models.CharField(max_length=20, blank=True, default='')

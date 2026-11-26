@@ -11,6 +11,7 @@ from rest_framework import serializers
 from .models import (
     CoaAccount,
     EntryTemplate,
+    PAYMENT_MODE_CHOICES,
     Payee,
     TaxPreset,
     Transaction,
@@ -38,16 +39,17 @@ TAX_BASE_TYPES = ['vatable_sales', 'gross_inclusive_vat', 'gross_total', 'contra
 ROUNDING_METHODS = ['half_up_2dp', 'truncate_2dp']
 TAX_MODES = ['none', 'vat5', 'vat5_ewt2', 'vat5_ewt1', 'pt3', 'pt3_ewt1', 'pt3_ewt2', 'ewt2', 'custom']
 TX_STATUSES = ['draft', 'posted', 'lacking', 'audited']
-MATH_STATUSES = ['pending_jev', 'reconciled', 'discrepancy', 'manual_review']
+MATH_STATUSES = ['not_applicable', 'pending_jev', 'reconciled', 'discrepancy', 'manual_review']
 TAX_STATUSES = [
     'not_applicable', 'none_withheld', 'pending_base', 'incomplete_evidence',
     'verified', 'variance', 'manual_review',
 ]
-DOC_STATUSES = ['incomplete', 'complete', 'lacking']
+DOC_STATUSES = ['not_applicable', 'incomplete', 'complete', 'lacking']
 CLERK_STATUSES = ['draft', 'pending_review', 'for_verification', 'lacking', 'audited']
 AUDIT_CATEGORIES = [
     'account_role_override', 'tax_rule_override', 'gross_basis_override',
     'legacy_v2_upgrade', 'clerk_review_decision',
+    'cancelled_check_flag', 'cancelled_check_evidence',
 ]
 
 
@@ -164,11 +166,17 @@ class WorkspaceRecordSerializer(serializers.ModelSerializer):
 
 
 class TransactionSerializer(WorkspaceRecordSerializer):
+    # Always written on create; older clients may omit the key entirely.
+    paymentMode = serializers.ChoiceField(
+        choices=PAYMENT_MODE_CHOICES, required=False, default='check'
+    )
+
     optional_empty_fields = (
         'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'rciAmount', 'declaredJevGross',
         'grossBasisOverride', 'mathStatus', 'taxStatus', 'documentaryStatus',
         'clerkReviewStatus', 'amountModelVersion', 'legacySnapshot', 'templateId',
         'dvSignatories', 'procurement', 'testOfControls', 'remarks', 'submittedToCoaDate',
+        'cancellationReason', 'cancelledCheckAttachment',
     )
 
     class Meta:
@@ -180,10 +188,54 @@ class TransactionSerializer(WorkspaceRecordSerializer):
             'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus', 'documentaryStatus',
             'clerkReviewStatus', 'verificationAuditTrail', 'amountModelVersion', 'legacySnapshot',
             'templateId', 'journalLines', 'isBalanced', 'attributes', 'dvSignatories', 'procurement',
-            'testOfControls', 'remarks', 'status', 'submittedToCoaDate', 'authorizedUids',
-            'createdByUid', 'createdAt', 'updatedAt',
+            'testOfControls', 'isCancelled', 'cancellationReason', 'cancelledCheckAttachment',
+            'remarks', 'status', 'submittedToCoaDate', 'authorizedUids', 'createdByUid',
+            'createdAt', 'updatedAt',
         ]
         read_only_fields = ['createdAt', 'updatedAt']
+
+    def validate(self, attrs):
+        # Cancelled-check cross-field rules: un-cancelling clears stale evidence,
+        # and evidence may only exist on a cancelled row.
+        instance = self.instance
+        if attrs.get('isCancelled') is False:
+            attrs['cancelledCheckAttachment'] = ''
+        is_cancelled = attrs.get(
+            'isCancelled', getattr(instance, 'isCancelled', False) if instance else False
+        )
+        attachment = attrs.get(
+            'cancelledCheckAttachment',
+            getattr(instance, 'cancelledCheckAttachment', '') if instance else '',
+        )
+        if attachment and not is_cancelled:
+            raise serializers.ValidationError(
+                {'cancelledCheckAttachment': 'Attachment evidence only applies to cancelled checks.'}
+            )
+        payee = attrs.get('payeeName', getattr(instance, 'payeeName', '') if instance else '')
+        if not payee.strip() and not is_cancelled:
+            raise serializers.ValidationError({'payeeName': 'payeeName must not be empty.'})
+
+        status_value = attrs.get('status') or (self.instance.status if self.instance else None)
+        lines = attrs.get('journalLines')
+        if lines is not None and len(lines) == 0 and status_value != 'draft':
+            raise serializers.ValidationError('Empty journalLines only allowed for draft status.')
+        for field, choices in (
+            ('mathStatus', MATH_STATUSES),
+            ('taxStatus', TAX_STATUSES),
+            ('documentaryStatus', DOC_STATUSES),
+            ('clerkReviewStatus', CLERK_STATUSES),
+        ):
+            value = attrs.get(field)
+            if value not in (None, '') and value not in choices:
+                raise serializers.ValidationError({field: 'Invalid value.'})
+        for field in ('grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross'):
+            value = attrs.get(field)
+            if value is not None and value < 0:
+                raise serializers.ValidationError({field: 'Must be >= 0.'})
+        version = attrs.get('amountModelVersion')
+        if version is not None and not 1 <= version <= 10:
+            raise serializers.ValidationError({'amountModelVersion': 'Must be between 1 and 10.'})
+        return attrs
 
     def validate_month(self, value):
         if value not in MONTHS:
@@ -201,9 +253,9 @@ class TransactionSerializer(WorkspaceRecordSerializer):
         return value
 
     def validate_payeeName(self, value):
-        if not value.strip():
-            raise serializers.ValidationError('payeeName must not be empty.')
-        return value
+        # Blank payees are allowed only for cancelled checks; TransactionSerializer
+        # .validate() enforces non-empty payees for active rows.
+        return value.strip()
 
     def validate_attributes(self, value):
         if not isinstance(value, dict) or set(value.keys()) != {f'a{i}' for i in range(1, 8)}:
@@ -277,29 +329,6 @@ class TransactionSerializer(WorkspaceRecordSerializer):
             if evt.get('category') not in AUDIT_CATEGORIES:
                 raise serializers.ValidationError('Invalid audit category.')
         return value
-
-    def validate(self, attrs):
-        status_value = attrs.get('status') or (self.instance.status if self.instance else None)
-        lines = attrs.get('journalLines')
-        if lines is not None and len(lines) == 0 and status_value != 'draft':
-            raise serializers.ValidationError('Empty journalLines only allowed for draft status.')
-        for field, choices in (
-            ('mathStatus', MATH_STATUSES),
-            ('taxStatus', TAX_STATUSES),
-            ('documentaryStatus', DOC_STATUSES),
-            ('clerkReviewStatus', CLERK_STATUSES),
-        ):
-            value = attrs.get(field)
-            if value not in (None, '') and value not in choices:
-                raise serializers.ValidationError({field: 'Invalid value.'})
-        for field in ('grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross'):
-            value = attrs.get(field)
-            if value is not None and value < 0:
-                raise serializers.ValidationError({field: 'Must be >= 0.'})
-        version = attrs.get('amountModelVersion')
-        if version is not None and not 1 <= version <= 10:
-            raise serializers.ValidationError({'amountModelVersion': 'Must be between 1 and 10.'})
-        return attrs
 
 
 class EntryTemplateSerializer(WorkspaceRecordSerializer):

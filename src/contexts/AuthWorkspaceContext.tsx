@@ -38,6 +38,7 @@ import {
 import {
   type AccountRole,
   type AuditAttributesMap,
+  type CancelledCheckAttachment,
   type ClerkReviewStatus,
   type CoaAccount,
   type DocumentaryVerificationStatus,
@@ -100,6 +101,9 @@ export interface CreateTransactionInput {
   dvSignatories?: DvSignatoriesMap;
   procurement?: ProcurementMeta;
   testOfControls?: TestOfControlsRecord;
+  isCancelled?: boolean;
+  cancellationReason?: string;
+  cancelledCheckAttachment?: CancelledCheckAttachment;
   remarks?: string;
   forceDraft?: boolean;
   submittedToCoaDate?: string;
@@ -150,7 +154,12 @@ interface AuthWorkspaceContextValue {
   revokeInvite: (inviteId: string) => Promise<void>;
   createTransaction: (input: CreateTransactionInput) => Promise<string>;
   batchCreateTransactions: (inputs: CreateTransactionInput[]) => Promise<number>;
-  updateTransaction: (txId: string, patch: Partial<TransactionRecord>) => Promise<void>;
+  updateTransaction: (
+    txId: string,
+    patch: Omit<Partial<TransactionRecord>, 'cancelledCheckAttachment'> & {
+      cancelledCheckAttachment?: CancelledCheckAttachment | '';
+    },
+  ) => Promise<void>;
   upgradeLegacyTransactionToV2: (tx: TransactionRecord, reason: string) => Promise<void>;
   deleteTransaction: (txId: string) => Promise<void>;
   createTemplate: (tpl: Omit<EntryTemplate, 'id' | 'workspaceId' | 'authorizedUids' | 'createdByUid' | 'createdAt' | 'updatedAt'>) => Promise<void>;
@@ -742,7 +751,10 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         adaCheckNo: cleanString(input.adaCheckNo, 40),
         paymentMode: normalizePaymentMode(input.paymentMode),
         dvNo: cleanString(input.dvNo, 40),
-        payeeName: cleanString(input.payeeName, 180) || 'Unnamed Payee',
+        // Cancelled checks may stay truly blank apart from date + serial.
+        payeeName: input.isCancelled
+          ? cleanString(input.payeeName, 180)
+          : cleanString(input.payeeName, 180) || 'Unnamed Payee',
         natureOfTransaction: cleanString(input.natureOfTransaction, 500),
         grossAmount: round2(Math.max(0, Number(input.grossAmount) || 0)),
         netAmount: safeNet,
@@ -753,7 +765,17 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         isBalanced: balance.isBalanced,
         attributes: attrs,
         status,
+        isCancelled: Boolean(input.isCancelled),
       };
+
+      if (input.cancellationReason?.trim()) {
+        payload.cancellationReason = cleanString(input.cancellationReason, 200);
+      }
+      if (input.isCancelled === false) {
+        payload.cancelledCheckAttachment = '';
+      } else if (input.cancelledCheckAttachment) {
+        payload.cancelledCheckAttachment = input.cancelledCheckAttachment;
+      }
 
       if (input.declaredJevGross !== undefined) {
         payload.declaredJevGross = round2(Math.max(0, Number(input.declaredJevGross) || 0));
@@ -847,7 +869,12 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
   );
 
   const updateTransaction = useCallback(
-    async (txId: string, patch: Partial<TransactionRecord>) => {
+    async (
+      txId: string,
+      patch: Omit<Partial<TransactionRecord>, 'cancelledCheckAttachment'> & {
+        cancelledCheckAttachment?: CancelledCheckAttachment | '';
+      },
+    ) => {
       if (!activeWorkspace) return;
       const wsId = activeWorkspace.id;
       const cleanPatch: Record<string, unknown> = {};
@@ -862,7 +889,12 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       if (patch.orNoDate !== undefined) cleanPatch.orNoDate = cleanString(patch.orNoDate, 40);
       if (patch.asaNo !== undefined) cleanPatch.asaNo = cleanString(patch.asaNo, 40);
       if (patch.jevNoDate !== undefined) cleanPatch.jevNoDate = cleanString(patch.jevNoDate, 50);
-      if (patch.payeeName !== undefined) cleanPatch.payeeName = cleanString(patch.payeeName, 180) || 'Unnamed Payee';
+      if (patch.payeeName !== undefined) {
+        cleanPatch.payeeName =
+          patch.isCancelled === true
+            ? cleanString(patch.payeeName, 180)
+            : cleanString(patch.payeeName, 180) || 'Unnamed Payee';
+      }
       if (patch.natureOfTransaction !== undefined) {
         cleanPatch.natureOfTransaction = cleanString(patch.natureOfTransaction, 500);
       }
@@ -899,6 +931,14 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         cleanPatch.isBalanced = patch.isBalanced;
       }
       if (patch.attributes !== undefined) cleanPatch.attributes = patch.attributes;
+      if (patch.isCancelled !== undefined) cleanPatch.isCancelled = Boolean(patch.isCancelled);
+      if (patch.cancellationReason !== undefined) {
+        cleanPatch.cancellationReason = cleanString(patch.cancellationReason, 200);
+      }
+      if (patch.cancelledCheckAttachment !== undefined) {
+        cleanPatch.cancelledCheckAttachment = patch.cancelledCheckAttachment || '';
+      }
+      if (patch.isCancelled === false) cleanPatch.cancelledCheckAttachment = '';
       if (patch.dvSignatories !== undefined) {
         cleanPatch.dvSignatories = sanitizeDvSignatories(patch.dvSignatories) ?? null;
       }

@@ -2,7 +2,9 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   buildBatchDraftTransactionInput,
+  detectBatchCancelledCell,
   isBatchHeaderRow,
+  parseBatchCancelledMarker,
   parseDelimitedRow,
 } from '../src/lib/batchImportParser';
 import { buildWorkingPaperExportData } from '../src/lib/excelExport';
@@ -27,14 +29,19 @@ import {
   describeTaxComputation,
   evaluateDocumentaryStatus,
   evaluateTaxVerification,
+  isCancelledTransaction,
+  isJevExempt,
+  isJevPending,
   isLegacyTransaction,
   normalizePaymentMode,
+  NO_JEV_CANCELLED_LABEL,
   paymentModeLabel,
   resolveJournalLineRole,
   sanitizeDvSignatories,
   sanitizeProcurement,
   sanitizeTestOfControls,
   suggestPresetIdForBirTitle,
+  summarizeLedgerTotals,
 } from '../src/lib/taxAndLedger';
 import type { CoaAccount, DvSignatoriesMap, JournalLine, TaxVerificationComponent, TransactionRecord } from '../src/types/rci';
 
@@ -206,6 +213,25 @@ test('Batch Paste parses Amount (Net of Tax) header and creates zero-JEV Draft r
   assert.equal(draft.taxStatus, 'pending_base');
   assert.equal(draft.clerkReviewStatus, 'draft');
   assert.equal(draft.amountModelVersion, 2);
+});
+
+test('Batch Paste carries Payment Via (Check/ADA) into every draft', () => {
+  const base = {
+    sequenceNo: 15,
+    month: 'April' as const,
+    adaCheckDate: '2026-04-01',
+    adaCheckNo: 'ADA-0001',
+    dvNo: '2026-04-001',
+    payeeName: 'NIA R13',
+    natureOfTransaction: 'ADA payment',
+    rawAmountString: '500.00',
+  };
+
+  assert.equal(buildBatchDraftTransactionInput(base).paymentMode, 'check');
+  assert.equal(
+    buildBatchDraftTransactionInput({ ...base, paymentMode: 'ada' }).paymentMode,
+    'ada',
+  );
 });
 
 test('Journal account classification distinguishes deductions vs Other Liability / Other Credit and flags unclassified', () => {
@@ -766,4 +792,314 @@ test('normalizePaymentMode maps to check/ada and legacy values to check', () => 
   assert.equal(paymentModeLabel('check'), 'Check');
   assert.equal(paymentModeLabel('ada'), 'ADA');
   assert.equal(paymentModeLabel('ADA'), 'ADA');
+});
+
+function makeRecord(overrides: Partial<TransactionRecord>): TransactionRecord {
+  return {
+    id: 'tx-1',
+    workspaceId: 'ws-1',
+    month: 'January',
+    sequenceNo: 1,
+    adaCheckDate: '2026-01-08',
+    adaCheckNo: '3967001',
+    dvNo: '2026-01-001',
+    payeeName: 'Test Payee',
+    natureOfTransaction: 'Utility',
+    grossAmount: 3500,
+    netAmount: 3281.25,
+    taxWithheld: 218.75,
+    journalLines: [
+      { accountCode: '50204020', accountTitle: 'Electricity Expenses', debit: 3500, credit: 0 },
+    ],
+    isBalanced: true,
+    attributes: defaultAttributes(),
+    status: 'posted',
+    authorizedUids: ['u1'],
+    createdByUid: 'u1',
+    ...overrides,
+  };
+}
+
+test('summarizeLedgerTotals excludes cancelled rows and reports excluded amounts', () => {
+  const active = makeRecord({ id: 'tx-a' });
+  const noFlag = makeRecord({
+    id: 'tx-b',
+    grossAmount: 1000,
+    netAmount: 900,
+    taxWithheld: 100,
+  });
+  const cancelled = makeRecord({
+    id: 'tx-c',
+    grossAmount: 5000,
+    netAmount: 4500,
+    taxWithheld: 500,
+    isCancelled: true,
+    cancelledCheckAttachment: 'missing',
+  });
+
+  const totals = summarizeLedgerTotals([active, noFlag, cancelled]);
+  assert.equal(totals.gross, 4500);
+  assert.equal(totals.net, 4181.25);
+  assert.equal(totals.tax, 318.75);
+  assert.equal(totals.cancelledCount, 1);
+  assert.equal(totals.cancelledNet, 4500);
+  assert.equal(totals.cancelledTax, 500);
+
+  assert.deepEqual(summarizeLedgerTotals([]), {
+    gross: 0,
+    net: 0,
+    tax: 0,
+    cancelledCount: 0,
+    cancelledNet: 0,
+    cancelledTax: 0,
+  });
+});
+
+test('isCancelledTransaction is falsy when the cancellation flag is missing', () => {
+  assert.equal(isCancelledTransaction(makeRecord({})), false);
+  assert.equal(isCancelledTransaction(makeRecord({ isCancelled: undefined })), false);
+  assert.equal(isCancelledTransaction(makeRecord({ isCancelled: false })), false);
+  assert.equal(isCancelledTransaction(makeRecord({ isCancelled: true })), true);
+});
+
+test('isJevExempt marks cancelled checks while isJevPending ignores them', () => {
+  const pending = makeRecord({ journalLines: [], grossAmount: 0, taxWithheld: 0 });
+  const cancelled = makeRecord({
+    journalLines: [],
+    grossAmount: 0,
+    taxWithheld: 0,
+    isCancelled: true,
+  });
+
+  assert.equal(isJevExempt(pending), false);
+  assert.equal(isJevPending(pending), true);
+  assert.equal(isJevExempt(cancelled), true);
+  assert.equal(isJevPending(cancelled), false);
+  assert.equal(isJevPending(makeRecord({})), false);
+  assert.equal(NO_JEV_CANCELLED_LABEL, 'No JEV (cancelled)');
+});
+
+test('Batch Paste draft input carries cancellation flags alongside zero-JEV drafts', () => {
+  const cancelledDraft = buildBatchDraftTransactionInput({
+    sequenceNo: 11,
+    month: 'February',
+    adaCheckDate: '2026-02-03',
+    adaCheckNo: '3967200',
+    dvNo: '2026-02-001',
+    payeeName: 'ANECO',
+    natureOfTransaction: 'Electricity billing February',
+    rawAmountString: '"1,000.00"',
+    isCancelled: true,
+    cancellationReason: '  Cancelled per RCI — spoiled check  ',
+  });
+  assert.equal(cancelledDraft.isCancelled, true);
+  assert.equal(cancelledDraft.cancellationReason, 'Cancelled per RCI — spoiled check');
+  assert.equal(cancelledDraft.rciAmount, 1000);
+  assert.equal(cancelledDraft.grossAmount, 0);
+  assert.equal(cancelledDraft.declaredJevGross, 0);
+  assert.equal(cancelledDraft.taxWithheld, 0);
+  assert.equal(cancelledDraft.journalLines.length, 0);
+  assert.equal(cancelledDraft.forceDraft, true);
+  assert.equal(cancelledDraft.remarks, '');
+  assert.equal(cancelledDraft.mathStatus, 'not_applicable');
+  assert.equal(cancelledDraft.taxStatus, 'not_applicable');
+  assert.equal(cancelledDraft.documentaryStatus, 'not_applicable');
+  assert.equal(cancelledDraft.clerkReviewStatus, 'draft');
+
+  const plainDraft = buildBatchDraftTransactionInput({
+    sequenceNo: 12,
+    month: 'February',
+    adaCheckDate: '2026-02-03',
+    adaCheckNo: '3967201',
+    dvNo: '2026-02-002',
+    payeeName: 'ANECO',
+    natureOfTransaction: 'Electricity billing February',
+    rawAmountString: '2,000.00',
+  });
+  assert.equal(plainDraft.isCancelled, false);
+  assert.equal(plainDraft.cancellationReason, '');
+  assert.equal(plainDraft.remarks, 'pending JEV encoding');
+  assert.equal(plainDraft.mathStatus, 'pending_jev');
+  assert.equal(plainDraft.taxStatus, 'pending_base');
+  assert.equal(plainDraft.documentaryStatus, 'incomplete');
+});
+
+test('parseBatchCancelledMarker matches anchored markers only and caps the reason', () => {
+  assert.deepEqual(parseBatchCancelledMarker('CANCELLED — spoiled'), {
+    isCancelled: true,
+    reason: 'CANCELLED — spoiled',
+  });
+  assert.equal(parseBatchCancelledMarker('void').isCancelled, true);
+  assert.equal(parseBatchCancelledMarker('Voided per RCI').isCancelled, true);
+  assert.equal(parseBatchCancelledMarker('spoiled check').isCancelled, true);
+  assert.equal(parseBatchCancelledMarker('replacement for cancelled check').isCancelled, false);
+  assert.equal(parseBatchCancelledMarker('').isCancelled, false);
+  assert.equal(parseBatchCancelledMarker(undefined).isCancelled, false);
+
+  const long = parseBatchCancelledMarker(`cancelled ${'x'.repeat(260)}`);
+  assert.equal(long.isCancelled, true);
+  assert.equal(long.reason.length, 200);
+});
+
+test('detectBatchCancelledCell locates the marker after date and serial', () => {
+  assert.deepEqual(detectBatchCancelledCell(['2026-07-02', '3967012', 'Cancelled']), {
+    isCancelled: true,
+    reason: 'Cancelled',
+    cellIndex: 2,
+  });
+  assert.equal(detectBatchCancelledCell(['2026-07-02', 'Cancelled']).cellIndex, 1);
+
+  const fullRow = detectBatchCancelledCell([
+    '2026-07-02',
+    '3967012',
+    '2026-07-001',
+    'ANECO',
+    'Electricity billing',
+    '100.00',
+    '',
+    'CANCELLED per RCI',
+  ]);
+  assert.equal(fullRow.isCancelled, true);
+  assert.equal(fullRow.cellIndex, 7);
+
+  // Free text in other cells must never trigger the flag.
+  assert.equal(
+    detectBatchCancelledCell([
+      '2026-07-02',
+      '3967012',
+      '2026-07-001',
+      'replacement for cancelled check',
+      'Services',
+      '100.00',
+    ]).isCancelled,
+    false,
+  );
+  assert.equal(
+    detectBatchCancelledCell(['2026-07-02', '3967012', '2026-07-001', 'ANECO', 'Electricity', '100.00'])
+      .isCancelled,
+    false,
+  );
+});
+
+test('Batch cancelled rows stay truly blank apart from date and serial', () => {
+  const cancelledDraft = buildBatchDraftTransactionInput({
+    sequenceNo: 13,
+    month: 'March',
+    adaCheckDate: '2026-03-04',
+    adaCheckNo: '3967300',
+    dvNo: '',
+    payeeName: '',
+    natureOfTransaction: '',
+    rawAmountString: '',
+    isCancelled: true,
+    cancellationReason: 'Cancelled',
+  });
+  assert.equal(cancelledDraft.payeeName, '');
+  assert.equal(cancelledDraft.natureOfTransaction, '');
+  assert.equal(cancelledDraft.dvNo, '');
+  assert.equal(cancelledDraft.rciAmount, 0);
+
+  const activeDraft = buildBatchDraftTransactionInput({
+    sequenceNo: 14,
+    month: 'March',
+    adaCheckDate: '2026-03-04',
+    adaCheckNo: '3967301',
+    dvNo: '',
+    payeeName: '',
+    natureOfTransaction: '',
+    rawAmountString: '',
+  });
+  assert.equal(activeDraft.payeeName, 'Unnamed Payee');
+  assert.equal(activeDraft.natureOfTransaction, 'Disbursement voucher');
+});
+
+test('Working paper export annotates cancelled rows and appends an exclusion totals row', () => {
+  const active = makeRecord({ id: 'tx-1', sequenceNo: 1, adaCheckNo: '3967001' });
+  const cancelled = makeRecord({
+    id: 'tx-2',
+    sequenceNo: 2,
+    adaCheckNo: '3967002',
+    dvNo: '2026-01-002',
+    payeeName: 'Cancelled Payee',
+    grossAmount: 1000,
+    netAmount: 900,
+    taxWithheld: 100,
+    journalLines: [
+      { accountCode: '50204020', accountTitle: 'Electricity Expenses', debit: 1000, credit: 0 },
+      { accountCode: '10102020', accountTitle: 'Cash in Bank', debit: 0, credit: 900 },
+    ],
+    isCancelled: true,
+    cancellationReason: 'Spoiled per agency RCI',
+    cancelledCheckAttachment: 'attached',
+  });
+
+  const { wpRows, rciRows } = buildWorkingPaperExportData([active, cancelled]);
+
+  assert.equal(rciRows.length, 3);
+  assert.equal(rciRows[0]['Cancelled Check'], '');
+  assert.equal(rciRows[0]['Original Cancelled Check'], '');
+  assert.equal(rciRows[1]['Cancelled Check'], 'CANCELLED');
+  assert.equal(rciRows[1]['Cancellation Reason'], 'Spoiled per agency RCI');
+  assert.equal(rciRows[1]['Original Cancelled Check'], 'Attached');
+
+  const totalsRow = rciRows[2];
+  assert.equal(totalsRow['No.'], 'TOTALS (excl. cancelled)');
+  assert.equal(totalsRow['RCI Check/ADA Amount (Net of Tax)'], 3281.25);
+  assert.equal(totalsRow['JEV Gross Amount'], 3500);
+  assert.equal(totalsRow['Total Tax Withheld'], 218.75);
+  assert.match(String(totalsRow['Remarks']), /1 cancelled row\(s\) excluded/);
+  assert.match(String(totalsRow['Remarks']), /₱900\.00/);
+
+  // Working-paper rows keep one line per journal entry; annotations only on the first line.
+  assert.equal(wpRows.length, 3);
+  assert.equal(wpRows[1]['ADA/Check No'], '3967002');
+  assert.equal(wpRows[1]['Cancelled Check'], 'CANCELLED');
+  assert.equal(wpRows[1]['Original Cancelled Check'], 'Attached');
+  assert.equal(wpRows[2]['Cancelled Check'], '');
+});
+
+test('Cancelled rows export as JEV-exempt instead of pending JEV', () => {
+  const cancelled = makeRecord({
+    id: 'tx-c',
+    sequenceNo: 1,
+    grossAmount: 0,
+    netAmount: 450,
+    taxWithheld: 0,
+    journalLines: [],
+    isCancelled: true,
+    remarks: '',
+    mathStatus: 'not_applicable',
+    taxStatus: 'not_applicable',
+    documentaryStatus: 'not_applicable',
+  });
+  const live = makeRecord({
+    id: 'tx-l',
+    sequenceNo: 2,
+    grossAmount: 0,
+    taxWithheld: 0,
+    journalLines: [],
+  });
+
+  const { wpRows, rciRows } = buildWorkingPaperExportData([cancelled, live]);
+
+  // Cancelled checks never get a JEV, so nothing reads as pending encoding work.
+  assert.equal(wpRows[0]['Account Title'], 'No JEV (cancelled)');
+  assert.equal(wpRows[0]['JEV Gross Amount'], 'N/A (cancelled)');
+  assert.equal(wpRows[0]['Total Tax Withheld'], 'N/A (cancelled)');
+  assert.equal(wpRows[0]['JEV No. and Date'], 'N/A (cancelled)');
+  assert.equal(wpRows[0]['Math Reconciliation'], 'N/A (CANCELLED)');
+  assert.equal(wpRows[0]['Tax Verification'], 'N/A (CANCELLED)');
+  assert.equal(wpRows[0]['Documentary Status'], 'N/A (CANCELLED)');
+
+  assert.equal(rciRows[0]['JEV Gross Amount'], 'N/A (cancelled)');
+  assert.equal(rciRows[0]['Total Tax Withheld'], 'N/A (cancelled)');
+  assert.equal(rciRows[0]['Math Reconciliation'], 'N/A (cancelled)');
+  assert.equal(rciRows[0]['Tax Verification'], 'N/A (cancelled)');
+  assert.equal(rciRows[0]['Documentary Status'], 'N/A (cancelled)');
+
+  // Live rows keep reporting pending JEV so outstanding encoding work stays visible.
+  assert.equal(wpRows[1]['Account Title'], 'Pending JEV encoding');
+  assert.equal(wpRows[1]['JEV Gross Amount'], 'Pending JEV');
+  assert.equal(wpRows[1]['JEV No. and Date'], 'Pending JEV');
+  assert.equal(rciRows[1]['JEV Gross Amount'], 'Pending JEV');
 });

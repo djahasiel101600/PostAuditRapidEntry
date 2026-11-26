@@ -1085,6 +1085,69 @@ export function getDisplayRciNetAmount(tx: Pick<TransactionRecord, 'rciAmount' |
   return round2(Number(tx.netAmount) || 0);
 }
 
+export function isCancelledTransaction(tx: Pick<TransactionRecord, 'isCancelled'>): boolean {
+  return Boolean(tx.isCancelled);
+}
+
+/** Shared label for JEV slots rendered on a cancelled check. */
+export const NO_JEV_CANCELLED_LABEL = 'No JEV (cancelled)';
+
+/**
+ * Cancelled checks are exempt from JEV encoding: no Journal Entry Voucher is
+ * ever prepared for them, so they must never surface as "pending JEV".
+ */
+export function isJevExempt(tx: Pick<TransactionRecord, 'isCancelled'>): boolean {
+  return isCancelledTransaction(tx);
+}
+
+/** True only for live (non-cancelled) rows still awaiting their first JEV. */
+export function isJevPending(
+  tx: Pick<TransactionRecord, 'isCancelled' | 'journalLines' | 'grossAmount'>,
+): boolean {
+  if (isJevExempt(tx)) return false;
+  return tx.journalLines.length === 0 && (Number(tx.grossAmount) || 0) === 0;
+}
+
+export interface LedgerTotalsSummary {
+  /** Gross/JEV total of non-cancelled rows. */
+  gross: number;
+  /** RCI Net total of non-cancelled rows. */
+  net: number;
+  /** Tax withheld total of non-cancelled rows. */
+  tax: number;
+  /** Number of cancelled rows excluded from the totals above. */
+  cancelledCount: number;
+  cancelledNet: number;
+  cancelledTax: number;
+}
+
+/**
+ * Single source of truth for money totals: cancelled checks stay in the record
+ * but are excluded from every aggregate (gross, RCI net, tax withheld).
+ */
+export function summarizeLedgerTotals(rows: TransactionRecord[]): LedgerTotalsSummary {
+  let gross = 0;
+  let net = 0;
+  let tax = 0;
+  let cancelledCount = 0;
+  let cancelledNet = 0;
+  let cancelledTax = 0;
+
+  for (const tx of rows) {
+    if (isCancelledTransaction(tx)) {
+      cancelledCount += 1;
+      cancelledNet = round2(cancelledNet + getDisplayRciNetAmount(tx));
+      cancelledTax = round2(cancelledTax + (Number(tx.taxWithheld) || 0));
+      continue;
+    }
+    gross = round2(gross + (Number(tx.grossAmount) || 0));
+    net = round2(net + getDisplayRciNetAmount(tx));
+    tax = round2(tax + (Number(tx.taxWithheld) || 0));
+  }
+
+  return { gross, net, tax, cancelledCount, cancelledNet, cancelledTax };
+}
+
 export function defaultAttributes(): AuditAttributesMap {
   return {
     a1: 'ok',

@@ -23,6 +23,7 @@ import { readPair } from '../lib/slashPair';
 import { useAuthWorkspace, type CreateTransactionInput } from '../contexts/AuthWorkspaceContext';
 import {
   buildBatchDraftTransactionInput,
+  detectBatchCancelledCell,
   isBatchHeaderRow,
   matchTemplateForBatchRow,
   normalizePasteDate,
@@ -49,8 +50,11 @@ import {
   getDisplayRciNetAmount,
   hasFlaggedAttribute,
   incrementCodeString,
+  isJevExempt,
+  isJevPending,
   isLegacyTransaction,
   normalizePaymentMode,
+  NO_JEV_CANCELLED_LABEL,
   resolveJournalLineRole,
   round2,
   sanitizeTaxComponents,
@@ -66,10 +70,12 @@ import {
 import {
   ACCOUNT_ROLE_LABELS,
   AUDIT_ATTRIBUTE_LABELS,
+  CANCELLED_CHECK_ATTACHMENT_LABELS,
   DV_SIGNATORY_LABELS,
   MONTHS,
   type AccountRole,
   type AuditAttributesMap,
+  type CancelledCheckAttachment,
   type ClerkReviewStatus,
   type DvSignatoriesMap,
   type EntryTemplate,
@@ -114,6 +120,7 @@ const TAX_BASE_TYPE_LABELS: Record<TaxBaseType, string> = {
 };
 
 const MATH_STATUS_LABELS = {
+  not_applicable: { label: 'N/A (Cancelled)', cls: 'text-slate-500 bg-slate-100 border-slate-200' },
   pending_jev: { label: 'Pending JEV', cls: 'text-amber-700 bg-amber-50 border-amber-200' },
   reconciled: { label: 'Reconciled', cls: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
   discrepancy: { label: 'Discrepancy', cls: 'text-red-700 bg-red-50 border-red-200' },
@@ -131,6 +138,7 @@ const TAX_STATUS_LABELS = {
 } as const;
 
 const DOC_STATUS_LABELS = {
+  not_applicable: { label: 'N/A (Cancelled)', cls: 'text-slate-500 bg-slate-100 border-slate-200' },
   incomplete: { label: 'Incomplete', cls: 'text-amber-700 bg-amber-50 border-amber-200' },
   complete: { label: 'Complete', cls: 'text-emerald-700 bg-emerald-50 border-emerald-200' },
   lacking: { label: 'Lacking', cls: 'text-red-700 bg-red-50 border-red-200' },
@@ -240,6 +248,11 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [adaCheckDate, setAdaCheckDate] = useState<string>(nextDefaults.date);
   const [adaCheckNo, setAdaCheckNo] = useState<string>(nextDefaults.checkNo);
   const [paymentMode, setPaymentMode] = useState<PaymentMode>('check');
+  const [isCancelled, setIsCancelled] = useState(false);
+  const [cancellationReason, setCancellationReason] = useState('');
+  const [cancelledCheckAttachment, setCancelledCheckAttachment] = useState<
+    CancelledCheckAttachment | ''
+  >('');
   const [dvNo, setDvNo] = useState<string>(nextDefaults.dvNo);
   const [dateReceived, setDateReceived] = useState<string>('');
   const [orNoDate, setOrNoDate] = useState<string>('');
@@ -385,7 +398,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [batchText, setBatchText] = useState('');
   const [batchTemplateId, setBatchTemplateId] = useState<string>('__auto__');
   const [batchLearnPayees, setBatchLearnPayees] = useState<boolean>(true);
+  const [batchPaymentMode, setBatchPaymentMode] = useState<PaymentMode>('check');
   const [batchRowOverrides, setBatchRowOverrides] = useState<Record<number, string>>({});
+  const [batchRowCancelled, setBatchRowCancelled] = useState<Record<number, boolean>>({});
 
   const [rememberPayeeTemplate, setRememberPayeeTemplate] = useState<boolean>(true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -446,6 +461,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setAttributes(defaultAttributes());
     setDvSignatories(defaultDvSignatories());
     setPaymentMode('check');
+    setIsCancelled(false);
+    setCancellationReason('');
+    setCancelledCheckAttachment('');
     setRemarks('complete');
     setProcurement({});
     setPhilgepsLookup({ status: 'idle' });
@@ -459,6 +477,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setLastCommittedId(null);
     setBatchText('');
     setBatchRowOverrides({});
+    setBatchRowCancelled({});
   }, [activeWorkspace?.id]);
 
   // Populate form when editingTx changes
@@ -469,6 +488,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setAdaCheckDate(editingTx.adaCheckDate);
     setAdaCheckNo(editingTx.adaCheckNo);
     setPaymentMode(normalizePaymentMode(editingTx.paymentMode));
+    setIsCancelled(Boolean(editingTx.isCancelled));
+    setCancellationReason(editingTx.cancellationReason || '');
+    setCancelledCheckAttachment(editingTx.cancelledCheckAttachment || '');
     setDvNo(editingTx.dvNo);
     setDateReceived(editingTx.dateReceived || '');
     setOrNoDate(editingTx.orNoDate || '');
@@ -761,6 +783,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setVerificationAuditTrail([]);
       setAttributes(defaultAttributes());
       setDvSignatories(defaultDvSignatories());
+      setIsCancelled(false);
+      setCancellationReason('');
+      setCancelledCheckAttachment('');
       setRemarks('complete');
       setProcurement({});
       setPhilgepsLookup({ status: 'idle' });
@@ -806,12 +831,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const handleCommit = useCallback(
     async (forceDraft = false) => {
       if (submitting) return;
-      if (!payeeName.trim()) {
+      // Cancelled checks may be recorded with only Date + Serial/Check No.
+      if (!isCancelled && !payeeName.trim()) {
         setFeedbackMsg({ tone: 'red', text: 'Payee name is required before committing.' });
         payeeInputRef.current?.focus();
         return;
       }
-      if (!forceDraft && !balanceSummary.isBalanced) {
+      if (!isCancelled && !forceDraft && !balanceSummary.isBalanced) {
         setFeedbackMsg({
           tone: 'amber',
           text: `Journal is unbalanced by ₱${formatPeso(Math.abs(balanceSummary.delta))}. Balance lines or Save as Draft.`,
@@ -823,9 +849,11 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setFeedbackMsg(null);
       try {
         const monthIndex = String(MONTHS.indexOf(selectedMonth) + 1).padStart(2, '0');
+        // Cancelled checks never get an auto-generated JEV number; only an
+        // explicitly recorded one is preserved for the audit trail.
         const computedJev =
           jevNoDate.trim() ||
-          (journalLines.length > 0
+          (journalLines.length > 0 && !isCancelled
             ? `${fiscalYear}-${monthIndex}-${String(sequenceNo).padStart(3, '0')} / ${adaCheckDate.slice(5)}`
             : '');
 
@@ -859,13 +887,18 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               adaCheckDate,
               adaCheckNo,
               paymentMode,
+              isCancelled,
+              cancellationReason: cancellationReason.trim() || undefined,
+              cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment : undefined,
               dvNo,
               dateReceived,
               orNoDate,
               asaNo,
               jevNoDate: computedJev,
               payeeName: payeeName.trim(),
-              natureOfTransaction: natureOfTransaction.trim() || 'Disbursement voucher entry',
+              natureOfTransaction: isCancelled
+                ? natureOfTransaction.trim()
+                : natureOfTransaction.trim() || 'Disbursement voucher entry',
               grossAmount: parsedDeclaredJevGross || editingTx.grossAmount,
               netAmount: effectiveNet,
               taxWithheld: effectiveTax,
@@ -894,13 +927,18 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               adaCheckDate,
               adaCheckNo,
               paymentMode,
+              isCancelled,
+              cancellationReason: cancellationReason.trim() || undefined,
+              cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment : undefined,
               dvNo,
               dateReceived,
               orNoDate,
               asaNo,
               jevNoDate: computedJev,
               payeeName: payeeName.trim(),
-              natureOfTransaction: natureOfTransaction.trim() || 'Disbursement voucher entry',
+              natureOfTransaction: isCancelled
+                ? natureOfTransaction.trim()
+                : natureOfTransaction.trim() || 'Disbursement voucher entry',
               grossAmount: effectiveGross,
               netAmount: effectiveNet,
               taxWithheld: effectiveTax,
@@ -908,9 +946,10 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               declaredJevGross: parsedDeclaredJevGross,
               grossBasisOverride,
               taxComponents: sanitizeTaxComponents(taxEvaluation.components),
-              mathStatus: reconciliationSummary.mathStatus,
-              taxStatus: taxEvaluation.taxStatus,
-              documentaryStatus: docStatus,
+              // Cancelled checks are JEV-exempt: verification is not applicable.
+              mathStatus: isCancelled ? 'not_applicable' : reconciliationSummary.mathStatus,
+              taxStatus: isCancelled ? 'not_applicable' : taxEvaluation.taxStatus,
+              documentaryStatus: isCancelled ? 'not_applicable' : docStatus,
               clerkReviewStatus: nextClerkStatus,
               verificationAuditTrail,
               amountModelVersion: 2,
@@ -971,13 +1010,18 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             adaCheckDate,
             adaCheckNo,
             paymentMode,
+            isCancelled,
+            cancellationReason: cancellationReason.trim() || undefined,
+            cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment || undefined : undefined,
             dvNo,
             dateReceived,
             orNoDate,
             asaNo,
             jevNoDate: computedJev,
             payeeName: payeeName.trim(),
-            natureOfTransaction: natureOfTransaction.trim() || 'Disbursement voucher entry',
+            natureOfTransaction: isCancelled
+              ? natureOfTransaction.trim()
+              : natureOfTransaction.trim() || 'Disbursement voucher entry',
             grossAmount: effectiveGross,
             netAmount: effectiveNet,
             taxWithheld: effectiveTax,
@@ -985,9 +1029,10 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             declaredJevGross: parsedDeclaredJevGross,
             grossBasisOverride,
             taxComponents: sanitizeTaxComponents(taxEvaluation.components),
-            mathStatus: reconciliationSummary.mathStatus,
-            taxStatus: taxEvaluation.taxStatus,
-            documentaryStatus: docStatus,
+            // Cancelled checks are JEV-exempt: verification is not applicable.
+            mathStatus: isCancelled ? 'not_applicable' : reconciliationSummary.mathStatus,
+            taxStatus: isCancelled ? 'not_applicable' : taxEvaluation.taxStatus,
+            documentaryStatus: isCancelled ? 'not_applicable' : docStatus,
             clerkReviewStatus: initialClerkStatus,
             verificationAuditTrail,
             amountModelVersion: 2,
@@ -1052,6 +1097,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       showProcurement,
       procurement,
       remarks,
+      isCancelled,
+      cancellationReason,
+      cancelledCheckAttachment,
       grossBasisOverride,
       taxEvaluation,
       docStatus,
@@ -1080,6 +1128,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setJournalLines(source.journalLines);
     setTaxComponents(source.taxComponents || []);
     setRemarks(source.remarks || 'complete');
+    setIsCancelled(false);
+    setCancellationReason('');
+    setCancelledCheckAttachment('');
     setFeedbackMsg({
       tone: 'emerald',
       text: `Cloned details from #${source.sequenceNo} (${source.payeeName}).`,
@@ -1143,26 +1194,45 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         ? templates.find((t) => t.id === batchTemplateId) || null
         : null;
 
-    const batchCheckCounts = new Map<string, number>();
-    const batchDvCounts = new Map<string, number>();
-
+    // Cancelled rows never consume the auto Check/DV counters; they are recorded
+    // truly blank apart from date + serial and do not advance auto-numbering.
     const preRows = parsedColRows.map((cols, idx) => {
       const dateStr = normalizePasteDate(cols[0] || '', adaCheckDate);
-      const checkStr = (
-        cols[1] || incrementCodeString(String(parseInt(nextDefaults.checkNo, 10) + idx - 1))
-      ).trim();
-      const dvStr = (
-        cols[2] || `${fiscalYear}-${monthIndex}-${String(nextDefaults.seq + idx).padStart(3, '0')}`
-      ).trim();
-
-      if (checkStr) batchCheckCounts.set(checkStr, (batchCheckCounts.get(checkStr) || 0) + 1);
-      if (dvStr) batchDvCounts.set(dvStr, (batchDvCounts.get(dvStr) || 0) + 1);
-
-      return { cols, idx, dateStr, checkStr, dvStr };
+      const marker = detectBatchCancelledCell(cols);
+      const rowCancelled = batchRowCancelled[idx] ?? marker.isCancelled;
+      return { cols, idx, dateStr, marker, rowCancelled };
     });
 
-    const rows = preRows.map(({ cols, idx, dateStr, checkStr, dvStr }) => {
-      const payeeStr = (cols[3] || 'Unnamed Payee').trim();
+    let autoNumberOffset = 0;
+    const numberedRows = preRows.map(({ cols, idx, dateStr, marker, rowCancelled }) => {
+      let checkStr: string;
+      let dvStr: string;
+      if (rowCancelled) {
+        // Never reuse the marker cell as a serial/DV value.
+        checkStr = marker.cellIndex === 1 ? '' : (cols[1] || '').trim();
+        dvStr = marker.cellIndex === 2 ? '' : (cols[2] || '').trim();
+      } else {
+        checkStr = (
+          cols[1] || incrementCodeString(String(parseInt(nextDefaults.checkNo, 10) + autoNumberOffset))
+        ).trim();
+        dvStr = (
+          cols[2] ||
+          `${fiscalYear}-${monthIndex}-${String(nextDefaults.seq + autoNumberOffset).padStart(3, '0')}`
+        ).trim();
+        autoNumberOffset += 1;
+      }
+      return { cols, idx, dateStr, marker, rowCancelled, checkStr, dvStr };
+    });
+
+    const batchCheckCounts = new Map<string, number>();
+    const batchDvCounts = new Map<string, number>();
+    for (const row of numberedRows) {
+      if (row.checkStr) batchCheckCounts.set(row.checkStr, (batchCheckCounts.get(row.checkStr) || 0) + 1);
+      if (row.dvStr) batchDvCounts.set(row.dvStr, (batchDvCounts.get(row.dvStr) || 0) + 1);
+    }
+
+    const rows = numberedRows.map(({ cols, idx, dateStr, marker, rowCancelled, checkStr, dvStr }) => {
+      const payeeStr = (cols[3] || '').trim();
       const hintCol = cols[6]?.trim();
 
       const overrideTplId = batchRowOverrides[idx];
@@ -1204,11 +1274,14 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         month: selectedMonth,
         adaCheckDate: dateStr,
         adaCheckNo: checkStr,
+        paymentMode: batchPaymentMode,
         dvNo: dvStr,
         payeeName: payeeStr,
-        natureOfTransaction: natureStr,
+        natureOfTransaction: rowCancelled ? (cols[4] || '').trim() : natureStr,
         rawAmountString: cols[5] || '0',
         suggestedTemplateId: suggestedTpl?.id,
+        isCancelled: rowCancelled,
+        cancellationReason: rowCancelled ? marker.reason || 'cancelled per agency RCI' : '',
       });
 
       const isDupCheck =
@@ -1225,6 +1298,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         matchSource,
         isDupCheck,
         isDupDv,
+        isCancelled: rowCancelled,
       };
     });
 
@@ -1232,7 +1306,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   }, [
     batchText,
     batchTemplateId,
+    batchPaymentMode,
     batchRowOverrides,
+    batchRowCancelled,
     templates,
     payees,
     selectedMonth,
@@ -1247,11 +1323,18 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const batchSummary = useMemo(() => {
     let duplicates = 0;
     let totalRci = 0;
+    let cancelledCount = 0;
+    let cancelledNet = 0;
     for (const r of parsedBatchPreview) {
-      totalRci = round2(totalRci + r.input.rciAmount);
       if (r.isDupCheck || r.isDupDv) duplicates += 1;
+      if (r.isCancelled) {
+        cancelledCount += 1;
+        cancelledNet = round2(cancelledNet + r.input.rciAmount);
+        continue;
+      }
+      totalRci = round2(totalRci + r.input.rciAmount);
     }
-    return { total: parsedBatchPreview.length, duplicates, totalRci };
+    return { total: parsedBatchPreview.length, duplicates, totalRci, cancelledCount, cancelledNet };
   }, [parsedBatchPreview]);
 
   const handleBatchImport = async () => {
@@ -1271,9 +1354,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setShowBatchModal(false);
       setBatchText('');
       setBatchRowOverrides({});
+      setBatchRowCancelled({});
+      const liveCount = batchSummary.total - batchSummary.cancelledCount;
       setFeedbackMsg({
         tone: 'amber',
-        text: `Imported ${count} Draft row(s) into ${selectedMonth} (RCI Net ₱${formatPeso(batchSummary.totalRci)} · Pending JEV encoding).`,
+        text: `Imported ${count} Draft row(s) into ${selectedMonth} (RCI Net ₱${formatPeso(
+          batchSummary.totalRci,
+        )}${batchSummary.cancelledCount > 0 ? ` · ${batchSummary.cancelledCount} cancelled excluded (₱${formatPeso(batchSummary.cancelledNet)}) · JEV-exempt` : ''}${liveCount > 0 ? ' · Pending JEV encoding' : ''}).`,
       });
     } catch (err) {
       setFeedbackMsg({
@@ -1654,6 +1741,17 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setEvidenceOverride(null);
   };
 
+  // Cancelled checks are JEV-exempt: verification chips read N/A instead of pending.
+  const mathChip = isCancelled
+    ? MATH_STATUS_LABELS.not_applicable
+    : MATH_STATUS_LABELS[reconciliationSummary.mathStatus];
+  const taxChip = isCancelled
+    ? TAX_STATUS_LABELS.not_applicable
+    : TAX_STATUS_LABELS[taxEvaluation.taxStatus];
+  const docChip = isCancelled
+    ? DOC_STATUS_LABELS.not_applicable
+    : DOC_STATUS_LABELS[docStatus];
+
   return (
     <div className="flex flex-col h-full min-h-0">
       {/* Batch Sticky Bar + Shortcut Strip */}
@@ -1949,6 +2047,79 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               </div>
             </div>
 
+            <div
+              className={`mt-2.5 rounded border px-2.5 py-2 ${
+                isCancelled ? 'border-rose-300 bg-rose-50/60' : 'border-slate-200 bg-slate-50'
+              }`}
+            >
+              <div className="flex flex-wrap items-center gap-3">
+                <label className="inline-flex items-center gap-1.5 text-xs font-medium text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={isCancelled}
+                    onChange={(e) => {
+                      const next = e.target.checked;
+                      setIsCancelled(next);
+                      if (!next) setCancelledCheckAttachment('');
+                      appendAuditEvent(
+                        'cancelled_check_flag',
+                        next ? 'Marked cancelled per agency RCI' : 'Cancellation flag cleared',
+                        { targetRef: adaCheckNo.trim() || `#${sequenceNo}` },
+                      );
+                    }}
+                    className="h-3.5 w-3.5 accent-rose-600"
+                  />
+                  Cancelled Check (per agency RCI)
+                </label>
+                {isCancelled && (
+                  <input
+                    type="text"
+                    maxLength={200}
+                    value={cancellationReason}
+                    onChange={(e) => setCancellationReason(e.target.value)}
+                    placeholder="Reason (spoiled / stale / misprinted / payee refused) — optional"
+                    className="h-8 flex-1 min-w-[220px] px-2 text-xs border border-rose-200 rounded bg-white focus:outline-none focus:border-rose-400"
+                  />
+                )}
+                {isCancelled && canAudit && (
+                  <label className="inline-flex items-center gap-1.5 text-xs text-slate-600">
+                    Original cancelled check:
+                    <select
+                      value={cancelledCheckAttachment}
+                      onChange={(e) => {
+                        const next = e.target.value as CancelledCheckAttachment | '';
+                        appendAuditEvent(
+                          'cancelled_check_evidence',
+                          `Cancelled-check evidence set to ${next || 'pending verification'}`,
+                          {
+                            targetRef: adaCheckNo.trim() || `#${sequenceNo}`,
+                            previousValue: cancelledCheckAttachment || 'pending',
+                            newValue: next || 'pending',
+                          },
+                        );
+                        setCancelledCheckAttachment(next);
+                      }}
+                      className="h-8 px-1.5 text-xs border border-rose-200 rounded bg-white"
+                    >
+                      <option value="">Pending verification</option>
+                      <option value="attached">Attached</option>
+                      <option value="missing">Missing</option>
+                      <option value="na">N/A</option>
+                    </select>
+                  </label>
+                )}
+                {isCancelled && !canAudit && cancelledCheckAttachment && (
+                  <span className="text-[11px] font-medium text-slate-600">
+                    {CANCELLED_CHECK_ATTACHMENT_LABELS[cancelledCheckAttachment]}
+                  </span>
+                )}
+              </div>
+              <p className="mt-1 text-[10px] text-slate-500">
+                Excluded from RCI Net / JEV Gross / tax totals; the serial stays recorded. The
+                original cancelled check must be on file for post-audit verification.
+              </p>
+            </div>
+
             {showAllVoucherFields && (
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mt-2.5 pt-2.5 border-t border-slate-100">
                 <div>
@@ -2097,7 +2268,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     const dupCheck = (duplicateIndex.checks.get(tx.adaCheckNo.trim()) || []).length > 1;
                     const isSelected = editingTx?.id === tx.id || lastCommittedId === tx.id;
                     const legacy = isLegacyTransaction(tx);
-                    const isPendingJev = tx.journalLines.length === 0 && tx.grossAmount === 0;
+                    const jevExempt = isJevExempt(tx);
+                    const isPendingJev = isJevPending(tx);
                     const hasReconAlert =
                       !legacy &&
                       (tx.mathStatus === 'discrepancy' ||
@@ -2159,17 +2331,38 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                           {tx.natureOfTransaction}
                         </td>
                         <td className="px-3 font-mono tabular-nums text-right font-medium text-slate-900 whitespace-nowrap">
-                          {formatPeso(getDisplayRciNetAmount(tx))}
+                          <span
+                            className={tx.isCancelled ? 'line-through text-slate-400' : ''}
+                            title={
+                              tx.isCancelled ? 'Cancelled check — excluded from totals' : undefined
+                            }
+                          >
+                            {formatPeso(getDisplayRciNetAmount(tx))}
+                          </span>
                         </td>
                         <td className="px-3 font-mono tabular-nums text-right text-slate-600 whitespace-nowrap">
-                          {isPendingJev ? (
+                          {jevExempt && tx.journalLines.length === 0 ? (
+                            <span
+                              className="text-[11px] font-sans text-slate-400"
+                              title="Cancelled check — no JEV entry will be encoded"
+                            >
+                              {NO_JEV_CANCELLED_LABEL}
+                            </span>
+                          ) : isPendingJev ? (
                             <span className="text-[11px] font-sans text-amber-700">Pending JEV</span>
                           ) : (
-                            formatPeso(tx.grossAmount)
+                            <span className={tx.isCancelled ? 'line-through text-slate-400' : ''}>
+                              {formatPeso(tx.grossAmount)}
+                            </span>
                           )}
                         </td>
                         <td className={`px-3 capitalize whitespace-nowrap ${statusColor}`}>
                           <span>{tx.status}</span>
+                          {tx.isCancelled && (
+                            <span className="ml-1 inline-block text-[10px] leading-none px-1 py-0.5 rounded border border-rose-200 bg-rose-50 text-rose-700 font-sans font-semibold align-middle">
+                              CANCELLED
+                            </span>
+                          )}
                           {hasReconAlert && (
                             <span
                               title="RCI-vs-JEV math or tax verification discrepancy"
@@ -2312,12 +2505,20 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
           <div className="grid grid-cols-3 border-b border-slate-200 bg-slate-50/70 divide-x divide-slate-200">
             <div className="px-3 py-2">
               <p className="text-[11px] text-slate-500">JEV Gross Basis</p>
-              <p className="text-xs font-mono tabular-nums font-semibold text-slate-900">
-                {reconciliationSummary.reconciliationGrossAmount !== null
-                  ? `₱${formatPeso(reconciliationSummary.reconciliationGrossAmount)}`
-                  : reconciliationSummary.mathStatus === 'pending_jev'
-                    ? 'Pending JEV'
-                    : 'Manual Review'}
+              <p
+                className={`text-xs font-mono tabular-nums font-semibold ${
+                  isCancelled ? 'text-slate-500' : 'text-slate-900'
+                }`}
+              >
+                {isCancelled && journalLines.length === 0 ? (
+                  <span className="font-sans font-normal text-[11px]">{NO_JEV_CANCELLED_LABEL}</span>
+                ) : reconciliationSummary.reconciliationGrossAmount !== null ? (
+                  `₱${formatPeso(reconciliationSummary.reconciliationGrossAmount)}`
+                ) : reconciliationSummary.mathStatus === 'pending_jev' ? (
+                  'Pending JEV'
+                ) : (
+                  'Manual Review'
+                )}
               </p>
             </div>
             <div className="px-3 py-2">
@@ -2448,28 +2649,30 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             <div className="p-3 border-b border-slate-200 bg-slate-50/40 space-y-1.5">
               <div className="grid grid-cols-2 gap-1.5 text-[11px]">
                 <div
-                  className={`px-2 py-1.5 rounded border ${MATH_STATUS_LABELS[reconciliationSummary.mathStatus].cls}`}
-                  title={reconciliationSummary.reasons.join(' ')}
+                  className={`px-2 py-1.5 rounded border ${mathChip.cls}`}
+                  title={
+                    isCancelled
+                      ? 'Cancelled check — no JEV entry will be encoded'
+                      : reconciliationSummary.reasons.join(' ')
+                  }
                 >
                   <span className="block text-[10px] opacity-75">Math Reconciliation</span>
-                  <span className="font-semibold">
-                    {MATH_STATUS_LABELS[reconciliationSummary.mathStatus].label}
-                  </span>
+                  <span className="font-semibold">{mathChip.label}</span>
                 </div>
                 <div
-                  className={`px-2 py-1.5 rounded border ${TAX_STATUS_LABELS[taxEvaluation.taxStatus].cls}`}
-                  title={taxEvaluation.reasons.join(' ')}
+                  className={`px-2 py-1.5 rounded border ${taxChip.cls}`}
+                  title={
+                    isCancelled
+                      ? 'Cancelled check — no JEV entry will be encoded'
+                      : taxEvaluation.reasons.join(' ')
+                  }
                 >
                   <span className="block text-[10px] opacity-75">Tax Verification</span>
-                  <span className="font-semibold">
-                    {TAX_STATUS_LABELS[taxEvaluation.taxStatus].label}
-                  </span>
+                  <span className="font-semibold">{taxChip.label}</span>
                 </div>
-                <div
-                  className={`px-2 py-1.5 rounded border ${DOC_STATUS_LABELS[docStatus].cls}`}
-                >
+                <div className={`px-2 py-1.5 rounded border ${docChip.cls}`}>
                   <span className="block text-[10px] opacity-75">Documentary</span>
-                  <span className="font-semibold">{DOC_STATUS_LABELS[docStatus].label}</span>
+                  <span className="font-semibold">{docChip.label}</span>
                 </div>
                 <div className="px-2 py-1.5 rounded border border-slate-200 bg-white">
                   <span className="block text-[10px] text-slate-500">Clerk Review</span>
@@ -2496,7 +2699,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   </select>
                 </div>
               </div>
-              {reconciliationSummary.reasons.length > 0 &&
+              {!isCancelled &&
+                reconciliationSummary.reasons.length > 0 &&
                 reconciliationSummary.mathStatus !== 'reconciled' && (
                   <p className="text-[11px] text-red-700 leading-snug">
                     {reconciliationSummary.reasons[0]}
@@ -2531,12 +2735,23 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             </div>
 
             {journalLines.length === 0 ? (
-              <div className="p-3 bg-amber-50/70 border border-amber-200 rounded text-xs text-amber-900 space-y-1.5">
-                <p className="font-medium">No JEV lines recorded yet (Pending JEV encoding).</p>
-                <p className="text-[11px] text-amber-800">
-                  Enter JEV Gross above, pick a Smart Template, or click <strong>+ Line</strong> to encode the accounting lines.
-                </p>
-              </div>
+              isCancelled ? (
+                <div className="p-3 bg-slate-50 border border-slate-200 rounded text-xs text-slate-700 space-y-1.5">
+                  <p className="font-medium">Cancelled check — no JEV entry will be encoded.</p>
+                  <p className="text-[11px] text-slate-500">
+                    The row stays in the ledger as an audit-trail record and is excluded from every
+                    total. JEV lines are not required.
+                  </p>
+                </div>
+              ) : (
+                <div className="p-3 bg-amber-50/70 border border-amber-200 rounded text-xs text-amber-900 space-y-1.5">
+                  <p className="font-medium">No JEV lines recorded yet (Pending JEV encoding).</p>
+                  <p className="text-[11px] text-amber-800">
+                    Enter JEV Gross above, pick a Smart Template, or click <strong>+ Line</strong> to
+                    encode the accounting lines.
+                  </p>
+                </div>
+              )
             ) : (
               <div className="space-y-2">
                 {journalLines.map((line, idx) => {
@@ -3121,7 +3336,7 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
           {/* DV Signatories (A–C) */}
           <div className="p-3 border-b border-slate-200">
             <div className="flex items-center justify-between mb-2">
-              <span className="text-xs font-medium text-slate-700">DV Signatories (A–C)</span>
+              <span className="text-xs font-medium text-slate-700">DV Signatories (A, C, D).</span>
               <span className="text-[11px] font-mono text-slate-500">
                 {dvFlaggedCount === 0 ? 'All boxes OK' : `${dvFlaggedCount} flagged`}
               </span>
@@ -3427,6 +3642,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                 <p className="text-xs text-slate-500">
                   Columns: Date · Check/ADA No · DV No · Payee · Nature ·{' '}
                   <strong className="text-slate-800">Amount (Net of Tax)</strong> · [Optional Template Hint]
+                  · [Optional Status: CANCELLED]. Cancelled rows may be pasted as{' '}
+                  <span className="font-mono text-slate-700">Date · Serial · Cancelled</span>.
                 </p>
               </div>
               <button
@@ -3459,6 +3676,36 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                     </option>
                   ))}
                 </select>
+
+                <div className="flex items-center gap-1.5">
+                  <label className="text-xs font-medium text-slate-600 whitespace-nowrap">
+                    Payment Via:
+                  </label>
+                  <div className="flex h-8 rounded border border-slate-200 overflow-hidden">
+                    <button
+                      type="button"
+                      onClick={() => setBatchPaymentMode('check')}
+                      className={`px-2.5 text-[11px] font-medium cursor-pointer transition-colors ${
+                        batchPaymentMode === 'check'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      Check (RCI)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setBatchPaymentMode('ada')}
+                      className={`px-2.5 text-[11px] font-medium cursor-pointer transition-colors border-l border-slate-200 ${
+                        batchPaymentMode === 'ada'
+                          ? 'bg-blue-600 text-white'
+                          : 'bg-white text-slate-600 hover:bg-slate-50'
+                      }`}
+                    >
+                      ADA (RADAI)
+                    </button>
+                  </div>
+                </div>
               </div>
 
               <label className="inline-flex items-center gap-1.5 text-xs text-slate-700 cursor-pointer">
@@ -3474,7 +3721,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             <div className="mb-2.5 px-3 py-2 bg-amber-50 border border-amber-200 rounded text-[11px] text-amber-900">
               All pasted RCI rows are imported as <strong>Draft (0 JEV lines)</strong> storing only the agency-submitted{' '}
               <strong>Check/ADA Amount (Net of Tax)</strong>. JEV Gross, Taxes Withheld, and accounting lines remain{' '}
-              <strong>Pending JEV</strong> until encoded per voucher.
+              <strong>Pending JEV</strong> until encoded per voucher. Rows marked <strong>CANCELLED</strong> are{' '}
+              <strong>JEV-exempt</strong> — no journal entry is ever encoded for them.
             </div>
 
             <textarea
@@ -3483,8 +3731,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               onChange={(e) => {
                 setBatchText(e.target.value);
                 setBatchRowOverrides({});
+                setBatchRowCancelled({});
               }}
-              placeholder={`Date\tCheck/ADA No\tDV No\tPayee\tNature\tAmount (Net of Tax)\n01/12/${fiscalYear}\t3967130\t${fiscalYear}-01-015\tANECO\tPayment of Electricity Bill\t"14,779.01"`}
+              placeholder={`Date\tCheck/ADA No\tDV No\tPayee\tNature\tAmount (Net of Tax)\t[Template Hint]\t[Status]\n01/12/${fiscalYear}\t3967130\t${fiscalYear}-01-015\tANECO\tPayment of Electricity Bill\t"14,779.01"\t\tCANCELLED (spoiled)\n01/12/${fiscalYear}\t3967131\tCancelled`}
               className="w-full p-2.5 text-xs font-mono border border-slate-200 rounded bg-slate-50 focus:outline-none focus:border-blue-600 shrink-0"
             />
 
@@ -3494,9 +3743,12 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   <thead className="sticky top-0 bg-slate-100 border-b border-slate-200 z-10 text-[11px] font-semibold text-slate-600">
                     <tr>
                       <th className="py-2 px-2.5 w-12">Seq</th>
-                      <th className="py-2 px-2.5 w-32">Date · Check / DV</th>
+                      <th className="py-2 px-2.5 w-32">
+                        Date · {batchPaymentMode === 'ada' ? 'ADA' : 'Check'} No. / DV
+                      </th>
                       <th className="py-2 px-2.5">Payee &amp; Nature</th>
                       <th className="py-2 px-2.5 w-56">Suggested Template (Later JEV)</th>
+                      <th className="py-2 px-2.5 w-20 text-center">Cancelled?</th>
                       <th className="py-2 px-2.5 text-right w-28">RCI Net (₱)</th>
                       <th className="py-2 px-2.5 text-right w-24">JEV Gross</th>
                       <th className="py-2 px-2.5 text-right w-20">Tax</th>
@@ -3505,7 +3757,15 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   </thead>
                   <tbody className="divide-y divide-slate-100">
                     {parsedBatchPreview.map(
-                      ({ rowIndex, input, suggestedTpl, matchSource, isDupCheck, isDupDv }) => {
+                      ({
+                        rowIndex,
+                        input,
+                        suggestedTpl,
+                        matchSource,
+                        isDupCheck,
+                        isDupDv,
+                        isCancelled: rowCancelled,
+                      }) => {
                         const selectVal = suggestedTpl?.id || '__none__';
                         const sourceLabel =
                           matchSource === 'manual'
@@ -3579,14 +3839,51 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                                 <span className="font-mono">0 JEV lines</span>
                               </div>
                             </td>
-                            <td className="py-1.5 px-2.5 text-right font-mono tabular-nums font-semibold text-emerald-700 align-top whitespace-nowrap">
+                            <td className="py-1.5 px-2.5 align-top text-center">
+                              <input
+                                type="checkbox"
+                                checked={rowCancelled}
+                                onChange={(e) =>
+                                  setBatchRowCancelled((prev) => ({
+                                    ...prev,
+                                    [rowIndex]: e.target.checked,
+                                  }))
+                                }
+                                title="Mark as a cancelled check — kept in the ledger but excluded from totals"
+                                className="h-3.5 w-3.5 accent-rose-600"
+                              />
+                              {rowCancelled && (
+                                <div className="mt-0.5 text-[9px] font-semibold text-rose-700">
+                                  CANCELLED
+                                </div>
+                              )}
+                            </td>
+                            <td
+                              className={`py-1.5 px-2.5 text-right font-mono tabular-nums font-semibold align-top whitespace-nowrap ${
+                                rowCancelled
+                                  ? 'text-slate-400 line-through'
+                                  : 'text-emerald-700'
+                              }`}
+                              title={
+                                rowCancelled ? 'Cancelled check — excluded from totals' : undefined
+                              }
+                            >
                               {formatPeso(input.rciAmount)}
                             </td>
-                            <td className="py-1.5 px-2.5 text-right text-[11px] text-amber-700 align-top whitespace-nowrap">
-                              Pending JEV
+                            <td
+                              className={`py-1.5 px-2.5 text-right text-[11px] align-top whitespace-nowrap ${
+                                rowCancelled ? 'text-slate-400' : 'text-amber-700'
+                              }`}
+                              title={
+                                rowCancelled
+                                  ? 'Cancelled check — no JEV entry will be encoded'
+                                  : undefined
+                              }
+                            >
+                              {rowCancelled ? 'No JEV' : 'Pending JEV'}
                             </td>
                             <td className="py-1.5 px-2.5 text-right text-[11px] text-slate-400 align-top whitespace-nowrap">
-                              Pending
+                              {rowCancelled ? '—' : 'Pending'}
                             </td>
                             <td className="py-1.5 px-2.5 text-center align-top text-[11px] font-medium text-amber-700">
                               Draft
@@ -3605,6 +3902,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                 {parsedBatchPreview.length > 0 ? (
                   <span>
                     {batchSummary.total} Draft(s) · Total RCI Net ₱{formatPeso(batchSummary.totalRci)}
+                    {batchSummary.cancelledCount > 0 && (
+                      <span className="text-rose-700 font-semibold">
+                        {' '}
+                        · {batchSummary.cancelledCount} cancelled (₱
+                        {formatPeso(batchSummary.cancelledNet)} excluded)
+                      </span>
+                    )}
                     {batchParseResult.skippedHeader ? ' · Header skipped' : ''}
                     {batchSummary.duplicates > 0 && (
                       <span className="text-red-600 font-semibold">

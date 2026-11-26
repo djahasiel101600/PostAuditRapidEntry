@@ -11,6 +11,7 @@ import type {
   MathReconciliationStatus,
   MonthName,
   PayeeRecord,
+  PaymentMode,
   TaxVerificationStatus,
 } from '../types/rci';
 
@@ -178,6 +179,7 @@ export interface BatchDraftTransactionInput {
   month: MonthName;
   adaCheckDate: string;
   adaCheckNo: string;
+  paymentMode: PaymentMode;
   dvNo: string;
   payeeName: string;
   natureOfTransaction: string;
@@ -186,6 +188,8 @@ export interface BatchDraftTransactionInput {
   grossAmount: number;
   netAmount: number;
   taxWithheld: number;
+  isCancelled: boolean;
+  cancellationReason: string;
   templateId?: string;
   journalLines: JournalLine[];
   attributes: AuditAttributesMap;
@@ -199,44 +203,98 @@ export interface BatchDraftTransactionInput {
 }
 
 /**
+ * Detects a cancelled-check marker in the optional Status column of a pasted row.
+ * Anchored to the start of the cell so free text like "replacement for cancelled check"
+ * never excludes a valid payment from totals by accident.
+ */
+export function parseBatchCancelledMarker(cell?: string): {
+  isCancelled: boolean;
+  reason: string;
+} {
+  const raw = (cell || '').trim();
+  if (!raw) return { isCancelled: false, reason: '' };
+  const match = raw.match(/^(cancelled|canceled|void|voided|spoiled)\b/i);
+  if (!match) return { isCancelled: false, reason: '' };
+  return { isCancelled: true, reason: raw.slice(0, 200) };
+}
+
+/**
+ * Locates the cancelled-check marker in a pasted row. The marker may sit in:
+ * - the Serial cell of a two-cell row (date · Cancelled),
+ * - the DV cell of a three-cell row (date · Serial · Cancelled),
+ * - the optional trailing Status column (index 7) of a full row.
+ * Returns the marker cell index so it is never reused as a real DV/serial value.
+ */
+export function detectBatchCancelledCell(cols: string[]): {
+  isCancelled: boolean;
+  reason: string;
+  cellIndex: number;
+} {
+  const candidates: number[] = [];
+  if (cols.length === 2) candidates.push(1);
+  if (cols.length === 3) candidates.push(2);
+  if (cols.length > 7) candidates.push(7);
+  for (const cellIndex of candidates) {
+    const marker = parseBatchCancelledMarker(cols[cellIndex]);
+    if (marker.isCancelled) return { ...marker, cellIndex };
+  }
+  return { isCancelled: false, reason: '', cellIndex: -1 };
+}
+
+/**
  * Builds a Batch Paste Draft payload storing ONLY the agency-submitted RCI Amount (Net of Tax).
- * Strictly creates ZERO JEV journal lines and leaves JEV Gross & Tax Withheld pending until JEV is encoded.
+ * Strictly creates ZERO JEV journal lines: live rows keep JEV Gross, Taxes Withheld, and
+ * accounting lines pending until encoded, while cancelled checks are JEV-exempt and carry
+ * not_applicable verification statuses (no JEV will ever be prepared for them).
  */
 export function buildBatchDraftTransactionInput(params: {
   sequenceNo: number;
   month: MonthName;
   adaCheckDate: string;
   adaCheckNo: string;
+  paymentMode?: PaymentMode;
   dvNo: string;
   payeeName: string;
   natureOfTransaction: string;
   rawAmountString: string;
   suggestedTemplateId?: string;
+  isCancelled?: boolean;
+  cancellationReason?: string;
 }): BatchDraftTransactionInput {
   const numericStr = (params.rawAmountString || '0').replace(/[^0-9.-]/g, '');
   const rciNet = round2(Math.max(0, parseFloat(numericStr) || 0));
+  const isCancelled = Boolean(params.isCancelled);
+  const payeeName = params.payeeName.trim();
+  const natureOfTransaction = params.natureOfTransaction.trim();
 
   return {
     sequenceNo: params.sequenceNo,
     month: params.month,
     adaCheckDate: params.adaCheckDate,
     adaCheckNo: params.adaCheckNo,
+    paymentMode: params.paymentMode === 'ada' ? 'ada' : 'check',
     dvNo: params.dvNo,
-    payeeName: params.payeeName.trim() || 'Unnamed Payee',
-    natureOfTransaction: params.natureOfTransaction.trim() || 'Disbursement voucher',
+    // Cancelled rows stay truly blank apart from date/serial: no placeholder text.
+    payeeName: isCancelled ? payeeName : payeeName || 'Unnamed Payee',
+    natureOfTransaction: isCancelled
+      ? natureOfTransaction
+      : natureOfTransaction || 'Disbursement voucher',
     rciAmount: rciNet,
     declaredJevGross: 0,
     grossAmount: 0,
     netAmount: rciNet,
     taxWithheld: 0,
+    isCancelled,
+    cancellationReason: (params.cancellationReason || '').trim().slice(0, 200),
     templateId: params.suggestedTemplateId || undefined,
     journalLines: [],
     attributes: defaultAttributes(),
-    remarks: 'pending JEV encoding',
+    // Cancelled checks never get a JEV, so nothing about them is "pending".
+    remarks: isCancelled ? '' : 'pending JEV encoding',
     forceDraft: true,
-    mathStatus: 'pending_jev',
-    taxStatus: 'pending_base',
-    documentaryStatus: 'incomplete',
+    mathStatus: isCancelled ? 'not_applicable' : 'pending_jev',
+    taxStatus: isCancelled ? 'not_applicable' : 'pending_base',
+    documentaryStatus: isCancelled ? 'not_applicable' : 'incomplete',
     clerkReviewStatus: 'draft',
     amountModelVersion: 2,
   };

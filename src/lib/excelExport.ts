@@ -1,9 +1,11 @@
 import * as XLSX from 'xlsx';
 import {
+  formatPeso,
   getDisplayRciNetAmount,
   isLegacyTransaction,
   normalizeAttributeState,
   paymentModeLabel,
+  summarizeLedgerTotals,
 } from './taxAndLedger';
 import { renderSlashPair } from './slashPair';
 import type { AuditAttributeState, MonthName, ProcurementMeta, TransactionRecord } from '../types/rci';
@@ -20,6 +22,27 @@ function tocStatusLabel(tx: TransactionRecord): string {
   const status = tx.testOfControls?.status;
   if (!status) return '';
   return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function cancelledCheckFlag(tx: TransactionRecord): string {
+  return tx.isCancelled ? 'CANCELLED' : '';
+}
+
+function cancelledCheckEvidence(tx: TransactionRecord): string {
+  if (!tx.isCancelled) return '';
+  if (tx.cancelledCheckAttachment === 'attached') return 'Attached';
+  if (tx.cancelledCheckAttachment === 'missing') return 'Missing';
+  if (tx.cancelledCheckAttachment === 'na') return 'N/A';
+  return 'Pending';
+}
+
+/**
+ * Cancelled checks never receive a JEV, so their money slots read as N/A
+ * instead of "Pending JEV" (which would imply outstanding encoding work).
+ */
+function jevExportCell(tx: TransactionRecord, hasJevLines: boolean, value: number): string | number {
+  if (hasJevLines || value > 0) return value;
+  return tx.isCancelled ? 'N/A (cancelled)' : 'Pending JEV';
 }
 
 function rfqExportCell(proc?: ProcurementMeta): string {
@@ -45,13 +68,32 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
     const rciNet = getDisplayRciNetAmount(tx);
     const lines = hasJevLines
       ? tx.journalLines
-      : [{ accountCode: '', accountTitle: 'Pending JEV encoding', debit: 0, credit: 0 }];
+      : [
+          {
+            accountCode: '',
+            accountTitle: tx.isCancelled ? 'No JEV (cancelled)' : 'Pending JEV encoding',
+            debit: 0,
+            credit: 0,
+          },
+        ];
 
     lines.forEach((line, idx) => {
       const isFirst = idx === 0;
-      const mathLabel = legacy ? 'LEGACY' : (tx.mathStatus || 'pending_jev').toUpperCase();
-      const taxLabel = legacy ? 'LEGACY' : (tx.taxStatus || 'pending_base').toUpperCase();
-      const docLabel = legacy ? 'LEGACY' : (tx.documentaryStatus || 'incomplete').toUpperCase();
+      const mathLabel = tx.isCancelled
+        ? 'N/A (CANCELLED)'
+        : legacy
+          ? 'LEGACY'
+          : (tx.mathStatus || 'pending_jev').toUpperCase();
+      const taxLabel = tx.isCancelled
+        ? 'N/A (CANCELLED)'
+        : legacy
+          ? 'LEGACY'
+          : (tx.taxStatus || 'pending_base').toUpperCase();
+      const docLabel = tx.isCancelled
+        ? 'N/A (CANCELLED)'
+        : legacy
+          ? 'LEGACY'
+          : (tx.documentaryStatus || 'incomplete').toUpperCase();
       const reviewLabel = (tx.clerkReviewStatus || tx.status).toUpperCase();
 
       wpRows.push({
@@ -62,8 +104,8 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Payment Mode': isFirst ? paymentModeLabel(tx.paymentMode) : '',
         'DV No.': isFirst ? tx.dvNo : '',
         'Payee': isFirst ? tx.payeeName : '',
-        'JEV Gross Amount': isFirst ? (hasJevLines || tx.grossAmount > 0 ? tx.grossAmount : 'Pending JEV') : '',
-        'Total Tax Withheld': isFirst ? (hasJevLines || tx.taxWithheld > 0 ? tx.taxWithheld : 'Pending JEV') : '',
+        'JEV Gross Amount': isFirst ? jevExportCell(tx, hasJevLines, tx.grossAmount) : '',
+        'Total Tax Withheld': isFirst ? jevExportCell(tx, hasJevLines, tx.taxWithheld) : '',
         'RCI Check/ADA Amount (Net)': isFirst ? rciNet : '',
         'Attr 1': isFirst ? attrSymbol(tx.attributes.a1) : '',
         'Attr 2 (E)': isFirst ? attrSymbol(tx.attributes.a2) : '',
@@ -92,7 +134,10 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Official Receipts / Invoice No.': isFirst ? tx.procurement?.orInvoiceRef || '' : '',
         'Test of Controls': isFirst ? tocStatusLabel(tx) : '',
         'Test of Controls Particulars': isFirst ? tx.testOfControls?.particulars || '' : '',
-        'JEV No. and Date': isFirst ? tx.jevNoDate || (hasJevLines ? '' : 'Pending JEV') : '',
+        'JEV No. and Date': isFirst
+          ? tx.jevNoDate ||
+            (tx.isCancelled ? 'N/A (cancelled)' : hasJevLines ? '' : 'Pending JEV')
+          : '',
         'Account Code': line.accountCode,
         'Account Title': line.accountTitle,
         'Account Role': line.accountRole || '',
@@ -104,11 +149,14 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Clerk Audit Review': isFirst ? reviewLabel : '',
         'Status': isFirst ? tx.status.toUpperCase() : '',
         'Reasons/Remarks': isFirst ? tx.remarks || '' : '',
+        'Cancelled Check': isFirst ? cancelledCheckFlag(tx) : '',
+        'Cancellation Reason': isFirst ? (tx.isCancelled ? tx.cancellationReason || '' : '') : '',
+        'Original Cancelled Check': isFirst ? cancelledCheckEvidence(tx) : '',
       });
     });
   }
 
-  const rciRows = sorted.map((tx) => {
+  const rciRows: Array<Record<string, string | number>> = sorted.map((tx) => {
     const legacy = isLegacyTransaction(tx);
     const hasJevLines = tx.journalLines.length > 0;
     return {
@@ -121,17 +169,48 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
       'Payee': tx.payeeName,
       'Nature of Transaction': tx.natureOfTransaction,
       'RCI Check/ADA Amount (Net of Tax)': getDisplayRciNetAmount(tx),
-      'JEV Gross Amount': hasJevLines || tx.grossAmount > 0 ? tx.grossAmount : 'Pending JEV',
-      'Total Tax Withheld': hasJevLines || tx.taxWithheld > 0 ? tx.taxWithheld : 'Pending JEV',
-      'Math Reconciliation': legacy ? 'Legacy' : tx.mathStatus || 'pending_jev',
-      'Tax Verification': legacy ? 'Legacy' : tx.taxStatus || 'pending_base',
-      'Documentary Status': legacy ? 'Legacy' : tx.documentaryStatus || 'incomplete',
+      'JEV Gross Amount': jevExportCell(tx, hasJevLines, tx.grossAmount),
+      'Total Tax Withheld': jevExportCell(tx, hasJevLines, tx.taxWithheld),
+      'Math Reconciliation': tx.isCancelled
+        ? 'N/A (cancelled)'
+        : legacy
+          ? 'Legacy'
+          : tx.mathStatus || 'pending_jev',
+      'Tax Verification': tx.isCancelled
+        ? 'N/A (cancelled)'
+        : legacy
+          ? 'Legacy'
+          : tx.taxStatus || 'pending_base',
+      'Documentary Status': tx.isCancelled
+        ? 'N/A (cancelled)'
+        : legacy
+          ? 'Legacy'
+          : tx.documentaryStatus || 'incomplete',
       'Clerk Audit Review': tx.clerkReviewStatus || tx.status,
       'COA Submitted Date': tx.submittedToCoaDate || '',
       'Status': tx.status,
       'Remarks': tx.remarks || '',
+      'Cancelled Check': cancelledCheckFlag(tx),
+      'Cancellation Reason': tx.isCancelled ? tx.cancellationReason || '' : '',
+      'Original Cancelled Check': cancelledCheckEvidence(tx),
     };
   });
+
+  // Totals row keeps readers from double-counting cancelled rows. It only uses
+  // keys already present in the header so existing row indexes stay stable.
+  if (rciRows.length > 0) {
+    const totals = summarizeLedgerTotals(sorted);
+    rciRows.push({
+      'No.': 'TOTALS (excl. cancelled)',
+      'RCI Check/ADA Amount (Net of Tax)': totals.net,
+      'JEV Gross Amount': totals.gross,
+      'Total Tax Withheld': totals.tax,
+      'Remarks':
+        totals.cancelledCount > 0
+          ? `${totals.cancelledCount} cancelled row(s) excluded (₱${formatPeso(totals.cancelledNet)})`
+          : 'No cancelled rows excluded',
+    });
+  }
 
   return { wpRows, rciRows };
 }
