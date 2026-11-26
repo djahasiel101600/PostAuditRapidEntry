@@ -95,7 +95,7 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
           : 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-slate-200';
 
   const idLabel = prefix ?? `${num}`;
-  const prefixLabel = compact ? '' : shortTag ? `${idLabel}${shortTag}` : idLabel;
+  const prefixLabel = compact ? idLabel : shortTag ? `${idLabel}${shortTag}` : idLabel;
   const displayGlyph = norm === 'na' ? (compact ? 'N/A' : '–') : currentMeta.glyph;
 
   return (
@@ -103,6 +103,7 @@ export const AuditAttributeCell: React.FC<AuditAttributeCellProps> = ({
       <button
         type="button"
         disabled={disabled}
+        aria-label={`(${idLabel}) ${label}: ${currentMeta.title}. Click to cycle states.`}
         title={`(${idLabel}) ${label} · Status: ${currentMeta.title}\nClick to cycle · Right-click for menu`}
         onClick={() => {
           if (disabled) return;

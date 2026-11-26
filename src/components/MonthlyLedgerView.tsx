@@ -1,9 +1,9 @@
-import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Download, Eye, EyeOff, Pencil, ShieldCheck } from 'lucide-react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { CheckCircle2, ChevronDown, Download, Eye, EyeOff, Pencil, Pin, ShieldCheck } from 'lucide-react';
 import { AuditAttributeCell } from './AuditAttributeCell';
 import { useAuthWorkspace } from '../contexts/AuthWorkspaceContext';
 import { exportWorkingPaperWorkbook } from '../lib/excelExport';
-import { renderSlashPair } from '../lib/slashPair';
+import { readPair, renderSlashPair } from '../lib/slashPair';
 import {
   createVerificationAuditEvent,
   deriveClerkReviewStatus,
@@ -53,6 +53,118 @@ const TOC_BTN_ACTIVE: Record<TestOfControlsStatus, string> = {
   disallowed: 'border-red-600 bg-red-600 text-white',
 };
 
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+const formatLedgerDate = (value: string): string => {
+  const match = ISO_DATE_RE.exec(value.trim());
+  return match ? `${match[2]}-${match[3]}-${match[1]}` : value;
+};
+
+/**
+ * Fixed column widths are what make freeze panes reliable: the sticky offset of
+ * a frozen column is the running sum of the widths before it, so a column that
+ * grew to fit its content would silently desync the whole pinned block. The
+ * table is therefore `table-fixed` + `<colgroup>` driven and long cell content
+ * truncates instead of widening its column.
+ */
+type LedgerColumnKey =
+  | 'seq'
+  | 'adaDate'
+  | 'checkNo'
+  | 'payee'
+  | 'rciNet'
+  | 'jevGross'
+  | 'evidence'
+  | 'attributes'
+  | 'dvSig'
+  | 'poToCoa'
+  | 'poNoDate'
+  | 'method'
+  | 'philgeps'
+  | 'prNoDate'
+  | 'abstractDate'
+  | 'rfq'
+  | 'iar'
+  | 'orRef'
+  | 'toc'
+  | 'jevNoDate'
+  | 'acctCode'
+  | 'acctTitle'
+  | 'debit'
+  | 'credit'
+  | 'remarks'
+  | 'audit';
+
+type FreezeBoundary = LedgerColumnKey | 'none';
+
+interface LedgerColumn {
+  key: LedgerColumnKey;
+  label: string;
+  width: number;
+}
+
+interface FreezePrefs {
+  boundary: FreezeBoundary;
+  pinAudit: boolean;
+}
+
+const LEDGER_COLUMNS: LedgerColumn[] = [
+  { key: 'seq', label: 'No.', width: 52 },
+  { key: 'adaDate', label: 'ADA/Check Date', width: 104 },
+  { key: 'checkNo', label: 'Check/ADA No', width: 144 },
+  { key: 'payee', label: 'Payee', width: 168 },
+  { key: 'rciNet', label: 'RCI Net', width: 108 },
+  { key: 'jevGross', label: 'JEV Gross', width: 120 },
+  { key: 'evidence', label: 'Evidence', width: 104 },
+  { key: 'attributes', label: 'Attributes (1–7)', width: 232 },
+  { key: 'dvSig', label: 'DV Sig.', width: 104 },
+  { key: 'toc', label: 'Test of Controls', width: 200 },
+  { key: 'jevNoDate', label: 'JEV No. & Date', width: 176 },
+  { key: 'acctCode', label: 'Acct Code', width: 128 },
+  { key: 'acctTitle', label: 'Account Title', width: 216 },
+  { key: 'debit', label: 'Dr', width: 108 },
+  { key: 'credit', label: 'Cr', width: 108 },
+  { key: 'remarks', label: 'Reasons / Remarks', width: 200 },
+  { key: 'audit', label: 'Audit', width: 112 },
+];
+
+/** Injected between DV Sig. and Test of Controls while the purchases toggle is on. */
+const PROCUREMENT_COLUMNS: LedgerColumn[] = [
+  { key: 'poToCoa', label: 'PO to COA', width: 104 },
+  { key: 'poNoDate', label: 'PO No./Date', width: 124 },
+  { key: 'method', label: 'Method', width: 128 },
+  { key: 'philgeps', label: 'PhilGEPS/Date', width: 124 },
+  { key: 'prNoDate', label: 'PR No./Date', width: 124 },
+  { key: 'abstractDate', label: 'Abstract/Date', width: 124 },
+  { key: 'rfq', label: 'RFQ (3)', width: 72 },
+  { key: 'iar', label: 'IAR / Date', width: 124 },
+  { key: 'orRef', label: 'OR / Invoice No.', width: 136 },
+];
+
+/** Only a leading block can be pinned — the same rule Excel enforces. */
+const FREEZE_BOUNDARIES: LedgerColumn[] = LEDGER_COLUMNS.filter((col) => col.key !== 'audit');
+
+const DEFAULT_FREEZE_BOUNDARY: FreezeBoundary = 'payee';
+const FREEZE_STORAGE_KEY = 'rci.monthlyLedger.freeze';
+
+const readFreezePrefs = (): FreezePrefs => {
+  try {
+    const raw = window.localStorage.getItem(FREEZE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<FreezePrefs>;
+      const boundary = parsed.boundary;
+      const known =
+        boundary === 'none' || FREEZE_BOUNDARIES.some((col) => col.key === boundary);
+      return {
+        boundary: known ? (boundary as FreezeBoundary) : DEFAULT_FREEZE_BOUNDARY,
+        pinAudit: parsed.pinAudit !== false,
+      };
+    }
+  } catch {
+    // Unreadable or blocked storage is not fatal — fall back to the defaults.
+  }
+  return { boundary: DEFAULT_FREEZE_BOUNDARY, pinAudit: true };
+};
+
 interface MonthlyLedgerViewProps {
   onEditInRapidEntry: (tx: TransactionRecord) => void;
 }
@@ -76,6 +188,9 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
   const [editingTocId, setEditingTocId] = useState<string | null>(null);
   const [tocStatusDraft, setTocStatusDraft] = useState<TestOfControlsStatus | ''>('');
   const [tocParticularsDraft, setTocParticularsDraft] = useState('');
+  const [freezePrefs, setFreezePrefs] = useState<FreezePrefs>(readFreezePrefs);
+  const [freezePanelOpen, setFreezePanelOpen] = useState(false);
+  const freezePanelRef = useRef<HTMLDivElement | null>(null);
 
   const monthRows = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -99,6 +214,105 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
   }, [transactions, selectedMonth, statusFilter, searchQuery]);
 
   const monthTotals = useMemo(() => summarizeLedgerTotals(monthRows), [monthRows]);
+  const hasActiveFilters = statusFilter !== 'all' || searchQuery.trim().length > 0;
+  const jevCoverage = useMemo(() => {
+    const liveRows = monthRows.filter((tx) => !isCancelledTransaction(tx));
+    const encoded = liveRows.filter((tx) => tx.journalLines.length > 0).length;
+    return { encoded, total: liveRows.length };
+  }, [monthRows]);
+  const statusCounts = useMemo(() => {
+    const monthTx = transactions.filter((tx) => tx.month === selectedMonth);
+    return {
+      all: monthTx.length,
+      posted: monthTx.filter((tx) => tx.status === 'posted').length,
+      lacking: monthTx.filter((tx) => tx.status === 'lacking').length,
+      audited: monthTx.filter((tx) => tx.status === 'audited').length,
+      draft: monthTx.filter((tx) => tx.status === 'draft').length,
+      cancelled: monthTx.filter((tx) => isCancelledTransaction(tx)).length,
+    };
+  }, [transactions, selectedMonth]);
+
+  // Freeze panes are expressed as "pin everything up to column X". The offset of
+  // each pinned column is a running sum of the fixed widths before it, so the
+  // block stays aligned no matter which column the user picks.
+  const visibleColumns = useMemo(() => {
+    if (!showPurchases) return LEDGER_COLUMNS;
+    const tocIndex = LEDGER_COLUMNS.findIndex((col) => col.key === 'toc');
+    return [
+      ...LEDGER_COLUMNS.slice(0, tocIndex),
+      ...PROCUREMENT_COLUMNS,
+      ...LEDGER_COLUMNS.slice(tocIndex),
+    ];
+  }, [showPurchases]);
+
+  const tableWidth = useMemo(
+    () => visibleColumns.reduce((total, col) => total + col.width, 0),
+    [visibleColumns],
+  );
+
+  const frozenZones = useMemo(() => {
+    const zones = new Map<LedgerColumnKey, { left: number; width: number }>();
+    if (freezePrefs.boundary === 'none') return zones;
+    let offset = 0;
+    for (const col of visibleColumns) {
+      if (col.key === 'audit') break;
+      zones.set(col.key, { left: offset, width: col.width });
+      offset += col.width;
+      if (col.key === freezePrefs.boundary) break;
+    }
+    return zones;
+  }, [visibleColumns, freezePrefs.boundary]);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(FREEZE_STORAGE_KEY, JSON.stringify(freezePrefs));
+    } catch {
+      // Storage is optional; the preference still applies for this session.
+    }
+  }, [freezePrefs]);
+
+  useEffect(() => {
+    if (!freezePanelOpen) return;
+    const handlePointerDown = (event: MouseEvent) => {
+      if (!freezePanelRef.current?.contains(event.target as Node)) setFreezePanelOpen(false);
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setFreezePanelOpen(false);
+    };
+    document.addEventListener('mousedown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('mousedown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [freezePanelOpen]);
+
+  const isFrozen = (key: LedgerColumnKey) => frozenZones.has(key);
+
+  const freezeStyle = (key: LedgerColumnKey): React.CSSProperties | undefined => {
+    const zone = frozenZones.get(key);
+    return zone
+      ? { left: zone.left, width: zone.width, minWidth: zone.width, maxWidth: zone.width }
+      : undefined;
+  };
+
+  // Pinned header cells must paint their own background, otherwise the columns
+  // scrolling underneath would show through.
+  const freezeHeadCls = (key: LedgerColumnKey, surface = 'bg-slate-100') =>
+    isFrozen(key) ? `sticky z-10 ${surface}` : '';
+
+  // The last pinned column carries the divider that marks the freeze boundary.
+  const edgeCls = (key: LedgerColumnKey) =>
+    key === freezePrefs.boundary
+      ? 'border-r-2 border-slate-300 shadow-[6px_0_8px_-8px_rgba(15,23,42,0.3)]'
+      : 'border-r border-slate-200';
+
+  const freezeLabel =
+    freezePrefs.boundary === 'none'
+      ? 'Freeze panes'
+      : `Frozen: ${
+          FREEZE_BOUNDARIES.find((col) => col.key === freezePrefs.boundary)?.label ?? ''
+        }`;
 
   const handleChangeAttr = async (
     tx: TransactionRecord,
@@ -255,8 +469,13 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
               >
                 <span>{m.slice(0, 3)}</span>
                 {count > 0 && (
-                  <span className={`ml-1 font-mono text-[10px] ${active ? 'text-slate-300' : 'text-slate-400'}`}>
-                    {count}
+                  <span
+                    className={`ml-1 font-mono text-[10px] tabular-nums ${
+                      active ? 'text-white/70' : 'text-slate-400'
+                    }`}
+                    title={`${count} ${count === 1 ? 'entry' : 'entries'} in ${m}`}
+                  >
+                    ({count})
                   </span>
                 )}
               </button>
@@ -269,10 +488,18 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
           onClick={() =>
             exportWorkingPaperWorkbook(activeWorkspace?.name || 'RCI_Ledger', selectedMonth, monthRows)
           }
+          title={
+            hasActiveFilters
+              ? 'Exports only the rows visible with the current status filter and search'
+              : `Exports all ${selectedMonth} transactions`
+          }
           className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap shrink-0"
         >
           <Download className="w-3.5 h-3.5" />
-          <span>Export {selectedMonth} .xlsx</span>
+          <span>
+            Export {selectedMonth}
+            {hasActiveFilters ? ' (filtered)' : ''} .xlsx
+          </span>
         </button>
       </div>
 
@@ -291,7 +518,14 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                     : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
-                {st}
+                <span>{st}</span>
+                <span
+                  className={`ml-1 font-mono text-[10px] tabular-nums ${
+                    statusFilter === st ? 'text-slate-300' : 'text-slate-400'
+                  }`}
+                >
+                  {statusCounts[st]}
+                </span>
               </button>
             ))}
           </div>
@@ -308,23 +542,121 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
             {showPurchases ? <EyeOff className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
             <span>{showPurchases ? 'Hide Purchases (PO/PhilGEPS)' : 'Show Purchases (PO/PhilGEPS)'}</span>
           </button>
+
+          <div className="relative" ref={freezePanelRef}>
+            <button
+              type="button"
+              onClick={() => setFreezePanelOpen((open) => !open)}
+              aria-expanded={freezePanelOpen}
+              aria-haspopup="dialog"
+              title="Choose which columns stay visible while you scroll right"
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium rounded border transition-colors cursor-pointer whitespace-nowrap ${
+                freezePrefs.boundary === 'none'
+                  ? 'bg-white border-slate-200 text-slate-700 hover:bg-slate-100'
+                  : 'bg-slate-900 border-slate-900 text-white'
+              }`}
+            >
+              <Pin className="w-3.5 h-3.5" />
+              <span>{freezeLabel}</span>
+              <ChevronDown className={`w-3 h-3 transition-transform ${freezePanelOpen ? 'rotate-180' : ''}`} />
+            </button>
+
+            {freezePanelOpen && (
+              <div className="absolute left-0 top-full z-50 mt-1 w-72 rounded-lg border border-slate-200 bg-white p-3 text-left shadow-xl">
+                <p className="text-xs font-semibold text-slate-900">Freeze panes</p>
+                <p className="mt-0.5 text-[11px] leading-snug text-slate-500">
+                  Pick the last column that should stay visible while the ledger scrolls.
+                </p>
+
+                <label className="mt-3 flex items-center gap-2 text-xs text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={freezePrefs.boundary !== 'none'}
+                    onChange={(event) =>
+                      setFreezePrefs((prev) => ({
+                        ...prev,
+                        boundary: event.target.checked
+                          ? prev.boundary === 'none'
+                            ? DEFAULT_FREEZE_BOUNDARY
+                            : prev.boundary
+                          : 'none',
+                      }))
+                    }
+                    className="h-3.5 w-3.5 rounded border-slate-300"
+                  />
+                  Freeze columns
+                </label>
+
+                <label className="mt-2 block">
+                  <span className="text-[10px] font-medium uppercase tracking-wide text-slate-400">
+                    Freeze up to
+                  </span>
+                  <select
+                    value={
+                      freezePrefs.boundary === 'none'
+                        ? DEFAULT_FREEZE_BOUNDARY
+                        : freezePrefs.boundary
+                    }
+                    disabled={freezePrefs.boundary === 'none'}
+                    onChange={(event) =>
+                      setFreezePrefs((prev) => ({
+                        ...prev,
+                        boundary: event.target.value as LedgerColumnKey,
+                      }))
+                    }
+                    className="mt-1 w-full h-7 px-1.5 text-xs bg-white border border-slate-200 rounded cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {FREEZE_BOUNDARIES.map((col, index) => (
+                      <option key={col.key} value={col.key}>
+                        {col.label} ({index + 1} column{index === 0 ? '' : 's'})
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label className="mt-3 flex items-center gap-2 border-t border-slate-100 pt-2 text-xs text-slate-700 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={freezePrefs.pinAudit}
+                    onChange={(event) =>
+                      setFreezePrefs((prev) => ({ ...prev, pinAudit: event.target.checked }))
+                    }
+                    className="h-3.5 w-3.5 rounded border-slate-300"
+                  />
+                  Pin audit actions to the right
+                </label>
+
+                <p className="mt-2 border-t border-slate-100 pt-2 text-[10px] leading-snug text-slate-400">
+                  Only a leading block can be pinned — the same rule Excel uses, because isolated
+                  frozen columns would leave gaps while scrolling.
+                </p>
+              </div>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-4">
           <div className="hidden lg:flex items-center gap-2 text-xs font-mono tabular-nums text-slate-600">
-            <span>JEV Gross: ₱{formatPeso(monthTotals.gross)}</span>
+            <span>
+              JEV Gross: ₱{formatPeso(monthTotals.gross)}
+              <span className="ml-1 text-[10px] text-slate-500">
+                ({jevCoverage.encoded}/{jevCoverage.total} encoded)
+              </span>
+            </span>
             <span aria-hidden="true">·</span>
             <span>Tax: ₱{formatPeso(monthTotals.tax)}</span>
             <span aria-hidden="true">·</span>
             <span className="text-slate-900 font-semibold">RCI Net: ₱{formatPeso(monthTotals.net)}</span>
             {monthTotals.cancelledCount > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-rose-700 font-semibold">
-                  Cancelled: {monthTotals.cancelledCount} (₱{formatPeso(monthTotals.cancelledNet)}{' '}
-                  excluded)
-                </span>
-              </>
+              <span
+                className="inline-flex items-center rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-800"
+                title={`${monthTotals.cancelledCount} cancelled row(s) are excluded from totals`}
+              >
+                Cancelled: {monthTotals.cancelledCount}
+                {monthTotals.cancelledNet > 0.01
+                  ? ` · ₱${formatPeso(monthTotals.cancelledNet)} excluded`
+                  : ''}
+              </span>
             )}
           </div>
           <input
@@ -349,69 +681,189 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
             </p>
           </div>
         ) : (
-          <table className="w-full border-collapse text-left text-xs">
-            <thead className="sticky top-0 bg-slate-100 border-b border-slate-300 z-10 text-[11px] font-semibold text-slate-700">
+          <table
+            className="table-fixed border-collapse text-left text-xs"
+            style={{ width: tableWidth }}
+          >
+            <colgroup>
+              {visibleColumns.map((col) => (
+                <col key={col.key} style={{ width: col.width }} />
+              ))}
+            </colgroup>
+            <thead className="sticky top-0 bg-slate-100 border-b border-slate-300 z-30 text-[11px] font-semibold text-slate-700">
               <tr>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-10">No.</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-24">ADA/Check Date</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-28">Check/ADA No</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-40">Payee</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">RCI Net Paid</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-right w-28">JEV Gross</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-center w-24">
+                <th
+                  style={freezeStyle('seq')}
+                  className={`${freezeHeadCls('seq')} ${edgeCls('seq')} py-2 px-2.5`}
+                >
+                  No.
+                </th>
+                <th
+                  style={freezeStyle('adaDate')}
+                  className={`${freezeHeadCls('adaDate')} ${edgeCls('adaDate')} py-2 px-2.5`}
+                >
+                  ADA/Check Date
+                </th>
+                <th
+                  style={freezeStyle('checkNo')}
+                  className={`${freezeHeadCls('checkNo')} ${edgeCls('checkNo')} py-2 px-2.5 whitespace-nowrap`}
+                >
+                  Check/ADA No
+                </th>
+                <th
+                  style={freezeStyle('payee')}
+                  className={`${freezeHeadCls('payee')} ${edgeCls('payee')} py-2 px-2.5`}
+                >
+                  Payee
+                </th>
+                <th
+                  style={freezeStyle('rciNet')}
+                  className={`${freezeHeadCls('rciNet')} ${edgeCls('rciNet')} py-2 px-2.5 text-right`}
+                >
+                  RCI Net (₱)
+                </th>
+                <th
+                  style={freezeStyle('jevGross')}
+                  className={`${freezeHeadCls('jevGross')} ${edgeCls('jevGross')} py-2 px-2.5 text-right`}
+                >
+                  JEV Gross (₱)
+                </th>
+                <th
+                  style={freezeStyle('evidence')}
+                  className={`${freezeHeadCls('evidence')} ${edgeCls('evidence')} py-2 px-2.5 text-center`}
+                >
                   Evidence
                 </th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-center w-48">
-                  Attributes (1–7 · ELAS)
+                <th
+                  style={freezeStyle('attributes')}
+                  className={`${freezeHeadCls('attributes')} ${edgeCls('attributes')} py-2 px-2.5 text-center cursor-help`}
+                  title={AUDIT_ATTRIBUTE_LABELS.map((attr) => `${attr.num}. ${attr.label}`).join('\n')}
+                >
+                  Attributes (1–7 · ELAS){' '}
+                  <span className="inline-flex h-3.5 w-3.5 items-center justify-center rounded-full border border-slate-300 align-middle text-[9px] font-normal leading-none text-slate-500">
+                    ?
+                  </span>
                 </th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-center w-24">
-                  DV Sig. (A·B·C)
+                <th
+                  style={freezeStyle('dvSig')}
+                  className={`${freezeHeadCls('dvSig')} ${edgeCls('dvSig')} py-2 px-2.5 text-center`}
+                >
+                  DV Sig. ({DV_SIGNATORY_LABELS.map((sig) => sig.letter).join('·')})
                 </th>
                 {showPurchases && (
                   <>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('poToCoa')}
+                      className={`${freezeHeadCls('poToCoa', 'bg-amber-50')} ${edgeCls('poToCoa')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       PO to COA
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('poNoDate')}
+                      className={`${freezeHeadCls('poNoDate', 'bg-amber-50')} ${edgeCls('poNoDate')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       PO No./Date
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('method')}
+                      className={`${freezeHeadCls('method', 'bg-amber-50')} ${edgeCls('method')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       Method
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('philgeps')}
+                      className={`${freezeHeadCls('philgeps', 'bg-amber-50')} ${edgeCls('philgeps')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       PhilGEPS/Date
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('prNoDate')}
+                      className={`${freezeHeadCls('prNoDate', 'bg-amber-50')} ${edgeCls('prNoDate')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       PR No./Date
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('abstractDate')}
+                      className={`${freezeHeadCls('abstractDate', 'bg-amber-50')} ${edgeCls('abstractDate')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       Abstract/Date
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 text-center whitespace-nowrap">
+                    <th
+                      style={freezeStyle('rfq')}
+                      className={`${freezeHeadCls('rfq', 'bg-amber-50')} ${edgeCls('rfq')} bg-amber-50 py-2 px-2 text-center text-amber-900 whitespace-nowrap`}
+                    >
                       RFQ (3)
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('iar')}
+                      className={`${freezeHeadCls('iar', 'bg-amber-50')} ${edgeCls('iar')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       IAR / Date
                     </th>
-                    <th className="py-2 px-2 border-r border-slate-200 bg-amber-50/80 text-amber-900 whitespace-nowrap">
+                    <th
+                      style={freezeStyle('orRef')}
+                      className={`${freezeHeadCls('orRef', 'bg-amber-50')} ${edgeCls('orRef')} bg-amber-50 py-2 px-2 text-amber-900 whitespace-nowrap`}
+                    >
                       OR / Invoice No.
                     </th>
                   </>
                 )}
-                <th className="py-2 px-2.5 border-r border-slate-200 min-w-[200px]">
+                <th
+                  style={freezeStyle('toc')}
+                  className={`${freezeHeadCls('toc')} ${edgeCls('toc')} py-2 px-2.5`}
+                >
                   Test of Controls
                 </th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-36">JEV No. &amp; Date</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 w-24">Acct Code</th>
-                <th className="py-2 px-2.5 border-r border-slate-200">Account Title</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-right w-24">Dr Amount</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 text-right w-24">Cr Amount</th>
-                <th className="py-2 px-2.5 border-r border-slate-200 min-w-[200px]">Reasons / Remarks</th>
-                <th className="py-2 px-2.5 w-24 text-right">Audit</th>
+                <th
+                  style={freezeStyle('jevNoDate')}
+                  className={`${freezeHeadCls('jevNoDate')} ${edgeCls('jevNoDate')} py-2 px-2.5`}
+                >
+                  JEV No. &amp; Date
+                </th>
+                <th
+                  style={freezeStyle('acctCode')}
+                  className={`${freezeHeadCls('acctCode')} ${edgeCls('acctCode')} py-2 px-2.5 whitespace-nowrap`}
+                >
+                  Acct Code
+                </th>
+                <th
+                  style={freezeStyle('acctTitle')}
+                  className={`${freezeHeadCls('acctTitle')} ${edgeCls('acctTitle')} py-2 px-2.5`}
+                >
+                  Account Title
+                </th>
+                <th
+                  style={freezeStyle('debit')}
+                  className={`${freezeHeadCls('debit')} ${edgeCls('debit')} py-2 px-2.5 text-right`}
+                >
+                  Dr (₱)
+                </th>
+                <th
+                  style={freezeStyle('credit')}
+                  className={`${freezeHeadCls('credit')} ${edgeCls('credit')} py-2 px-2.5 text-right`}
+                >
+                  Cr (₱)
+                </th>
+                <th
+                  style={freezeStyle('remarks')}
+                  className={`${freezeHeadCls('remarks')} ${edgeCls('remarks')} py-2 px-2.5`}
+                >
+                  Reasons / Remarks
+                </th>
+                <th
+                  style={freezePrefs.pinAudit ? { right: 0 } : undefined}
+                  className={`${
+                    freezePrefs.pinAudit
+                      ? 'sticky z-10 bg-slate-100 border-l-2 border-slate-300 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.3)]'
+                      : ''
+                  } py-2 px-2.5 text-right`}
+                >
+                  Audit
+                </th>
               </tr>
             </thead>
             <tbody>
-              {monthRows.map((tx) => {
+              {monthRows.map((tx, txIdx) => {
                 const hasJevLines = tx.journalLines.length > 0;
                 const jevExempt = isJevExempt(tx);
                 const lines = hasJevLines
@@ -426,35 +878,45 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                     ];
                 const isPendingJev = isJevPending(tx);
                 const legacy = isLegacyTransaction(tx);
+                const jevPair = readPair(tx.jevNo, tx.jevDate, tx.jevNoDate);
 
                 return lines.map((line, lineIdx) => {
                   const isFirst = lineIdx === 0;
                   const isLast = lineIdx === lines.length - 1;
                   const rowSpan = lines.length;
-                  const borderBottom = isLast ? 'border-b-2 border-slate-300' : 'border-b border-slate-100';
+                  const borderBottom = isLast ? 'border-b-[3px] border-slate-300' : 'border-b border-slate-100';
+                  // Opaque tints only — pinned cells paint over the scrolling ones.
+                  const voucherTint = txIdx % 2 === 1 ? 'bg-slate-50' : 'bg-white';
+                  const freezeBodyCls = (key: LedgerColumnKey, surface?: string) =>
+                    isFrozen(key)
+                      ? `sticky z-20 ${surface ?? `${voucherTint} group-hover/row:bg-slate-100`}`
+                      : '';
 
                   return (
                     <tr
                       key={`${tx.id}-${lineIdx}`}
-                      className={`${borderBottom} ${lineIdx % 2 === 1 ? 'bg-slate-50/60' : 'bg-white'}`}
+                      className={`group/row ${borderBottom} ${voucherTint} hover:bg-slate-100`}
                     >
                       {isFirst && (
                         <>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums text-slate-500"
+                            style={freezeStyle('seq')}
+                            className={`${freezeBodyCls('seq')} ${edgeCls('seq')} py-2 px-2.5 align-top font-mono tabular-nums text-slate-500`}
                           >
                             {tx.sequenceNo}
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums text-slate-700 whitespace-nowrap"
+                            style={freezeStyle('adaDate')}
+                            className={`${freezeBodyCls('adaDate')} ${edgeCls('adaDate')} py-2 px-2.5 align-top font-mono tabular-nums text-slate-700 whitespace-nowrap`}
                           >
-                            {tx.adaCheckDate}
+                            {formatLedgerDate(tx.adaCheckDate)}
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums font-medium text-slate-900 whitespace-nowrap"
+                            style={freezeStyle('checkNo')}
+                            className={`${freezeBodyCls('checkNo')} ${edgeCls('checkNo')} py-2 px-2.5 align-top font-mono tabular-nums font-medium text-slate-900 whitespace-nowrap`}
                           >
                             <span
                               className={`inline-block text-[10px] leading-none px-1 py-0.5 rounded border mr-1 align-middle font-sans font-semibold ${
@@ -469,18 +931,20 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top text-slate-900 font-medium"
+                            style={freezeStyle('payee')}
+                            className={`${freezeBodyCls('payee')} ${edgeCls('payee')} py-2 px-2.5 align-top text-slate-900 font-medium`}
                           >
-                            <div className="truncate max-w-[160px]" title={tx.payeeName}>
-                              {tx.payeeName}
+                            <div className="truncate" title={tx.payeeName || 'No payee recorded'}>
+                              {tx.payeeName || <span className="text-slate-400">—</span>}
                             </div>
-                            <div className="text-[11px] font-normal text-slate-500 mt-0.5 truncate max-w-[160px]">
+                            <div className="truncate text-[11px] font-normal text-slate-500 mt-0.5">
                               {tx.dvNo}
                             </div>
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top text-right font-mono tabular-nums font-semibold text-emerald-800 whitespace-nowrap"
+                            style={freezeStyle('rciNet')}
+                            className={`${freezeBodyCls('rciNet')} ${edgeCls('rciNet')} py-2 px-2.5 align-top text-right font-mono tabular-nums font-semibold text-emerald-800 whitespace-nowrap`}
                           >
                             {tx.isCancelled && (
                               <span className="mb-0.5 block text-[10px] font-sans font-semibold text-rose-700">
@@ -498,7 +962,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap"
+                            style={freezeStyle('jevGross')}
+                            className={`${freezeBodyCls('jevGross')} ${edgeCls('jevGross')} py-2 px-2.5 align-top text-right font-mono tabular-nums font-semibold text-slate-900 whitespace-nowrap`}
                           >
                             {jevExempt && !hasJevLines ? (
                               <span
@@ -508,7 +973,10 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 —
                               </span>
                             ) : isPendingJev ? (
-                              <span className="text-[11px] font-sans font-normal text-amber-700">
+                              <span
+                                className="inline-flex items-center rounded border border-amber-200 bg-amber-50 px-1 py-0.5 text-[10px] font-sans font-medium text-amber-800"
+                                title="JEV not yet encoded for this voucher"
+                              >
                                 Pending JEV
                               </span>
                             ) : (
@@ -519,7 +987,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2 border-r border-slate-200 align-top text-center"
+                            style={freezeStyle('evidence')}
+                            className={`${freezeBodyCls('evidence')} ${edgeCls('evidence')} py-2 px-2 align-top text-center`}
                           >
                             {tx.isCancelled ? (
                               canAudit ? (
@@ -532,7 +1001,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                     )
                                   }
                                   title={tx.cancellationReason || 'Original cancelled check on file?'}
-                                  className="w-full max-w-[104px] h-7 px-1 text-[10px] border border-rose-200 rounded bg-white text-slate-700"
+                                  className="w-full max-w-[88px] h-7 px-1 text-[10px] border border-rose-200 rounded bg-white text-slate-700"
                                 >
                                   <option value="">Pending</option>
                                   <option value="attached">Attached</option>
@@ -566,7 +1035,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2 border-r border-slate-200 align-top"
+                            style={freezeStyle('attributes')}
+                            className={`${freezeBodyCls('attributes')} ${edgeCls('attributes')} py-2 px-2 align-top`}
                           >
                             <div className="grid grid-cols-7 gap-0.5">
                               {AUDIT_ATTRIBUTE_LABELS.map((attr) => (
@@ -585,9 +1055,10 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2 border-r border-slate-200 align-top"
+                            style={freezeStyle('dvSig')}
+                            className={`${freezeBodyCls('dvSig')} ${edgeCls('dvSig')} py-2 px-2 align-top`}
                           >
-                            <div className="grid grid-cols-3 gap-0.5 w-24">
+                            <div className="grid grid-cols-3 gap-0.5 w-full">
                               {DV_SIGNATORY_LABELS.map((sig) => (
                                 <AuditAttributeCell
                                   key={sig.key}
@@ -608,13 +1079,15 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                             <>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('poToCoa')}
+                                className={`${freezeBodyCls('poToCoa', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('poToCoa')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {tx.procurement?.poSubmittedToCoaDate || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('poNoDate')}
+                                className={`${freezeBodyCls('poNoDate', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('poNoDate')} bg-amber-50 py-2 px-2 align-top text-slate-700 whitespace-nowrap`}
                               >
                                 {renderSlashPair(
                                   tx.procurement?.poNo,
@@ -624,19 +1097,22 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 text-slate-700"
+                                style={freezeStyle('method')}
+                                className={`${freezeBodyCls('method', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('method')} bg-amber-50 py-2 px-2 align-top text-slate-700`}
                               >
                                 {tx.procurement?.procurementMethod || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('philgeps')}
+                                className={`${freezeBodyCls('philgeps', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('philgeps')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {tx.procurement?.philgepsDate || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('prNoDate')}
+                                className={`${freezeBodyCls('prNoDate', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('prNoDate')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {renderSlashPair(
                                   tx.procurement?.prNo,
@@ -646,13 +1122,15 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('abstractDate')}
+                                className={`${freezeBodyCls('abstractDate', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('abstractDate')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {tx.procurement?.abstractDate || '—'}
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 text-center font-mono text-[11px] whitespace-nowrap"
+                                style={freezeStyle('rfq')}
+                                className={`${freezeBodyCls('rfq', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('rfq')} bg-amber-50 py-2 px-2 align-top text-center font-mono text-[11px] whitespace-nowrap`}
                               >
                                 {tx.procurement?.rfqStatus === '3plus' ? (
                                   <span className="text-emerald-700 font-bold" title="3+ RFQs attached">
@@ -671,7 +1149,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('iar')}
+                                className={`${freezeBodyCls('iar', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('iar')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {renderSlashPair(
                                   tx.procurement?.iarNo,
@@ -681,7 +1160,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                               </td>
                               <td
                                 rowSpan={rowSpan}
-                                className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
+                                style={freezeStyle('orRef')}
+                                className={`${freezeBodyCls('orRef', 'bg-amber-50 group-hover/row:bg-amber-100')} ${edgeCls('orRef')} bg-amber-50 py-2 px-2 align-top font-mono text-[11px] text-slate-700 whitespace-nowrap`}
                               >
                                 {tx.procurement?.orInvoiceRef || renderSlashPair(tx.orNo, tx.orDate, tx.orNoDate) || '—'}
                               </td>
@@ -689,7 +1169,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           )}
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2 border-r border-slate-200 align-top min-w-[200px]"
+                            style={freezeStyle('toc')}
+                            className={`${freezeBodyCls('toc')} ${edgeCls('toc')} py-2 px-2 align-top`}
                           >
                             {editingTocId === tx.id ? (
                               <div className="space-y-1">
@@ -780,29 +1261,60 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                           </td>
                           <td
                             rowSpan={rowSpan}
-                            className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums text-[11px] text-slate-700"
+                            style={freezeStyle('jevNoDate')}
+                            className={`${freezeBodyCls('jevNoDate')} ${edgeCls('jevNoDate')} py-2 px-2.5 align-top font-mono tabular-nums text-[11px] text-slate-700`}
+                            title={renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate) || undefined}
                           >
-                            {renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate) || '—'}
+                            {jevPair.left || jevPair.right ? (
+                              <>
+                                <span className="block whitespace-nowrap">{jevPair.left || '—'}</span>
+                                {jevPair.right && (
+                                  <span className="block whitespace-nowrap text-[10px] text-slate-500">
+                                    {formatLedgerDate(jevPair.right)}
+                                  </span>
+                                )}
+                              </>
+                            ) : (
+                              '—'
+                            )}
                           </td>
                         </>
                       )}
 
-                      <td className="py-1.5 px-2.5 border-r border-slate-200 font-mono tabular-nums text-[11px] text-slate-600">
+                      <td
+                        style={freezeStyle('acctCode')}
+                        className={`${freezeBodyCls('acctCode')} ${edgeCls('acctCode')} py-1.5 px-2.5 font-mono tabular-nums text-[11px] text-slate-600 whitespace-nowrap`}
+                      >
                         {line.accountCode}
                       </td>
-                      <td className="py-1.5 px-2.5 border-r border-slate-200 text-slate-900">
-                        {line.accountTitle}
+                      <td
+                        style={freezeStyle('acctTitle')}
+                        className={`${freezeBodyCls('acctTitle')} ${edgeCls('acctTitle')} py-1.5 px-2.5 text-slate-900`}
+                      >
+                        <div className="truncate" title={line.accountTitle}>
+                          {line.accountTitle}
+                        </div>
                       </td>
-                      <td className="py-1.5 px-2.5 border-r border-slate-200 text-right font-mono tabular-nums text-slate-900">
+                      <td
+                        style={freezeStyle('debit')}
+                        className={`${freezeBodyCls('debit')} ${edgeCls('debit')} py-1.5 px-2.5 text-right font-mono tabular-nums text-slate-900`}
+                      >
                         {line.debit > 0 ? formatPeso(line.debit) : ''}
                       </td>
-                      <td className="py-1.5 px-2.5 border-r border-slate-200 text-right font-mono tabular-nums text-slate-900">
+                      <td
+                        style={freezeStyle('credit')}
+                        className={`${freezeBodyCls('credit')} ${edgeCls('credit')} py-1.5 px-2.5 text-right font-mono tabular-nums text-slate-900`}
+                      >
                         {line.credit > 0 ? formatPeso(line.credit) : ''}
                       </td>
 
                       {isFirst && (
                         <>
-                          <td rowSpan={rowSpan} className="py-2 px-2.5 border-r border-slate-200 align-top">
+                          <td
+                            rowSpan={rowSpan}
+                            style={freezeStyle('remarks')}
+                            className={`${freezeBodyCls('remarks')} ${edgeCls('remarks')} py-2 px-2.5 align-top`}
+                          >
                             {editingRemarksId === tx.id ? (
                               <div className="space-y-1">
                                 <textarea
@@ -832,20 +1344,34 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 </div>
                               </div>
                             ) : (
-                              <div
+                              <button
+                                type="button"
                                 onClick={() => {
                                   if (tx.status === 'audited' && !canAudit) return;
                                   setEditingRemarksId(tx.id);
                                   setRemarksDraft(tx.remarks || '');
                                 }}
-                                title="Click to edit remarks"
-                                className="text-slate-700 whitespace-pre-line cursor-pointer hover:text-slate-950"
+                                title={tx.remarks || 'Click to add remarks'}
+                                className="group w-full max-w-[180px] rounded text-left text-slate-700 whitespace-pre-line line-clamp-2 cursor-pointer hover:bg-slate-50 hover:text-slate-950 focus:outline-none focus-visible:ring-1 focus-visible:ring-blue-500"
                               >
-                                {tx.remarks || <span className="text-slate-400">Add remark...</span>}
-                              </div>
+                                {tx.remarks || (
+                                  <span className="inline-flex items-center gap-1 text-slate-400 group-hover:text-slate-600">
+                                    <Pencil className="h-3 w-3" />
+                                    Add remark...
+                                  </span>
+                                )}
+                              </button>
                             )}
                           </td>
-                          <td rowSpan={rowSpan} className="py-2 px-2.5 align-top text-right whitespace-nowrap">
+                          <td
+                            rowSpan={rowSpan}
+                            style={freezePrefs.pinAudit ? { right: 0 } : undefined}
+                            className={`${
+                              freezePrefs.pinAudit
+                                ? `sticky z-20 border-l-2 border-slate-300 shadow-[-6px_0_8px_-8px_rgba(15,23,42,0.3)] ${voucherTint} group-hover/row:bg-slate-100`
+                                : ''
+                            } py-2 px-2.5 align-top text-right whitespace-nowrap`}
+                          >
                             <div className="flex flex-col items-end gap-1">
                               <span
                                 className={`text-[11px] font-medium capitalize ${
@@ -885,16 +1411,16 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                   ) : (
                                     <>
                                       {tx.mathStatus === 'reconciled'
-                                        ? 'M:OK'
+                                        ? 'Math ✓'
                                         : tx.mathStatus === 'discrepancy'
-                                          ? 'M:Δ'
+                                          ? 'Math ✕'
                                           : tx.mathStatus === 'manual_review'
-                                            ? 'M:REV'
-                                            : 'M:PND'}
+                                            ? 'Math !'
+                                            : 'Math –'}
                                       {tx.taxStatus === 'verified'
-                                        ? '·T:OK'
+                                        ? ' · Tax ✓'
                                         : tx.taxStatus === 'variance'
-                                          ? '·T:Δ'
+                                          ? ' · Tax ✕'
                                           : ''}
                                     </>
                                   )}
@@ -905,7 +1431,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                   type="button"
                                   onClick={() => onEditInRapidEntry(tx)}
                                   title="Open in Rapid Entry"
-                                  className="p-1 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
+                                  aria-label="Open in Rapid Entry"
+                                  className="p-1.5 text-slate-500 hover:text-slate-900 hover:bg-slate-100 rounded cursor-pointer"
                                 >
                                   <Pencil className="w-3.5 h-3.5" />
                                 </button>
@@ -914,7 +1441,8 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                     type="button"
                                     onClick={() => void handleMarkAudited(tx)}
                                     title={tx.status === 'audited' ? 'Unlock Audited Entry' : 'Sign off as Audited'}
-                                    className={`p-1 rounded cursor-pointer ${
+                                    aria-label={tx.status === 'audited' ? 'Unlock audited entry' : 'Sign off as audited'}
+                                    className={`p-1.5 rounded cursor-pointer ${
                                       tx.status === 'audited'
                                         ? 'text-emerald-700 bg-emerald-50'
                                         : 'text-slate-500 hover:text-emerald-700 hover:bg-emerald-50'

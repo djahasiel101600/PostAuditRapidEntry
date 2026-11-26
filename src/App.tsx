@@ -41,7 +41,6 @@ const WorkspaceShell: React.FC = () => {
     activeRole,
     workspaces,
     transactions,
-    selectedMonth,
     pendingInvitesForUser,
     acceptInvite,
   } = useAuthWorkspace();
@@ -159,12 +158,12 @@ const WorkspaceShell: React.FC = () => {
             <button
               type="button"
               onClick={() =>
-                exportWorkingPaperWorkbook(activeWorkspace.name, selectedMonth, transactions)
+                exportWorkingPaperWorkbook(activeWorkspace.name, 'All', transactions)
               }
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white border border-slate-200 rounded hover:bg-slate-50 transition-colors cursor-pointer whitespace-nowrap"
             >
               <Download className="w-3.5 h-3.5" />
-              <span>Export .xlsx</span>
+              <span>Export all (.xlsx)</span>
             </button>
 
             <button
