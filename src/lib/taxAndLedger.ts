@@ -1254,7 +1254,7 @@ export function sanitizeProcurement(proc?: ProcurementMeta): ProcurementMeta | u
 }
 
 export function defaultDvSignatories(): DvSignatoriesMap {
-  return { a: 'ok', b: 'ok', c: 'ok' };
+  return { a: 'ok', c: 'ok', d: 'ok' };
 }
 
 export function sanitizeDvSignatories(input?: DvSignatoriesMap | null): DvSignatoriesMap | undefined {

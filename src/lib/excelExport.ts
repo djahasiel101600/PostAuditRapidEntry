@@ -115,8 +115,8 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Attr 6': isFirst ? attrSymbol(tx.attributes.a6) : '',
         'Attr 7': isFirst ? attrSymbol(tx.attributes.a7) : '',
         'DV Sig. A': isFirst ? attrSymbol(tx.dvSignatories?.a || 'ok') : '',
-        'DV Sig. B': isFirst ? attrSymbol(tx.dvSignatories?.b || 'ok') : '',
         'DV Sig. C': isFirst ? attrSymbol(tx.dvSignatories?.c || 'ok') : '',
+        'DV Sig. D': isFirst ? attrSymbol(tx.dvSignatories?.d || 'ok') : '',
         'Date PO Submitted to COA': isFirst ? tx.procurement?.poSubmittedToCoaDate || '' : '',
         'PO No. / Date': isFirst
           ? renderSlashPair(tx.procurement?.poNo, tx.procurement?.poDate, tx.procurement?.poNoDate)

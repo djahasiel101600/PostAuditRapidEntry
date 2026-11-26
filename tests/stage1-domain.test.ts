@@ -722,11 +722,11 @@ test('composeSlashPair and readPair rebuild the display string with legacy fallb
 });
 
 test('sanitizeDvSignatories whitelists A/B/C keys and normalizes states', () => {
-  assert.deepEqual(defaultDvSignatories(), { a: 'ok', b: 'ok', c: 'ok' });
-  assert.deepEqual(sanitizeDvSignatories({ a: 'ok', b: 'exclamation', c: 'na' }), {
+  assert.deepEqual(defaultDvSignatories(), { a: 'ok', c: 'ok', d: 'ok' });
+  assert.deepEqual(sanitizeDvSignatories({ a: 'ok', c: 'exclamation', d: 'na' }), {
     a: 'ok',
-    b: 'exclamation',
-    c: 'na',
+    c: 'exclamation',
+    d: 'na',
   });
   assert.deepEqual(
     sanitizeDvSignatories({ a: 'ok', d: 'ok' } as unknown as DvSignatoriesMap),
