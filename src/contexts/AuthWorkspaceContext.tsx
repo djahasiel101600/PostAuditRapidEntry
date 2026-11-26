@@ -30,6 +30,7 @@ import {
   round2,
   sanitizeJournalLines,
   sanitizeDvSignatories,
+  sanitizeJevNoPair,
   sanitizeOrNoPair,
   sanitizeProcurement,
   sanitizeTaxComponents,
@@ -82,7 +83,10 @@ export interface CreateTransactionInput {
   orNo?: string;
   orDate?: string;
   asaNo?: string;
+  /** @deprecated legacy combined JEV "No / Date" string — parsed as fallback, never written back. */
   jevNoDate?: string;
+  jevNo?: string;
+  jevDate?: string;
   payeeName: string;
   natureOfTransaction: string;
   grossAmount: number;
@@ -807,7 +811,9 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       if (orPair.orNo) payload.orNo = orPair.orNo;
       if (orPair.orDate) payload.orDate = orPair.orDate;
       if (input.asaNo?.trim()) payload.asaNo = cleanString(input.asaNo, 40);
-      if (input.jevNoDate?.trim()) payload.jevNoDate = cleanString(input.jevNoDate, 50);
+      const jevPair = sanitizeJevNoPair(input.jevNo, input.jevDate, input.jevNoDate);
+      if (jevPair.jevNo) payload.jevNo = jevPair.jevNo;
+      if (jevPair.jevDate) payload.jevDate = jevPair.jevDate;
       if (input.templateId?.trim()) payload.templateId = cleanString(input.templateId, 128);
       if (input.dvSignatories) {
         const dvSig = sanitizeDvSignatories(input.dvSignatories);
@@ -901,7 +907,14 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
         cleanPatch.orDate = orPair.orDate || '';
       }
       if (patch.asaNo !== undefined) cleanPatch.asaNo = cleanString(patch.asaNo, 40);
-      if (patch.jevNoDate !== undefined) cleanPatch.jevNoDate = cleanString(patch.jevNoDate, 50);
+      if (patch.jevNo !== undefined) cleanPatch.jevNo = cleanString(patch.jevNo, 60);
+      if (patch.jevDate !== undefined) cleanPatch.jevDate = cleanString(patch.jevDate, 20);
+      // Legacy combined JEV "No / Date" input: store the parsed halves, never the combined form.
+      if (patch.jevNoDate !== undefined && patch.jevNo === undefined && patch.jevDate === undefined) {
+        const jevPair = sanitizeJevNoPair('', '', patch.jevNoDate);
+        cleanPatch.jevNo = jevPair.jevNo || '';
+        cleanPatch.jevDate = jevPair.jevDate || '';
+      }
       if (patch.payeeName !== undefined) {
         cleanPatch.payeeName =
           patch.isCancelled === true

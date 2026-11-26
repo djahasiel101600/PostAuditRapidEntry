@@ -1269,6 +1269,22 @@ export function sanitizeOrNoPair(
   return cleaned;
 }
 
+/**
+ * Split the JEV "No / Date" pair into independently stored fields. The legacy
+ * combined `jevNoDate` is parsed as a fallback but never written back.
+ */
+export function sanitizeJevNoPair(
+  no?: string | null,
+  date?: string | null,
+  legacy?: string | null,
+): { jevNo?: string; jevDate?: string } {
+  const pair = readPair(no, date, legacy);
+  const cleaned: { jevNo?: string; jevDate?: string } = {};
+  if (pair.left) cleaned.jevNo = pair.left.slice(0, 60);
+  if (pair.right) cleaned.jevDate = pair.right.slice(0, 20);
+  return cleaned;
+}
+
 export function defaultDvSignatories(): DvSignatoriesMap {
   return { a: 'ok', c: 'ok', d: 'ok' };
 }

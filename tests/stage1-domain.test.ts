@@ -38,6 +38,7 @@ import {
   paymentModeLabel,
   resolveJournalLineRole,
   sanitizeDvSignatories,
+  sanitizeJevNoPair,
   sanitizeOrNoPair,
   sanitizeProcurement,
   sanitizeTestOfControls,
@@ -741,6 +742,21 @@ test('sanitizeOrNoPair stores split OR fields and only reads the legacy string a
   });
 });
 
+test('sanitizeJevNoPair stores split JEV fields and only reads the legacy string as fallback', () => {
+  assert.deepEqual(sanitizeJevNoPair('2026-1-001', '01-09-2026'), {
+    jevNo: '2026-1-001',
+    jevDate: '01-09-2026',
+  });
+  assert.deepEqual(sanitizeJevNoPair('', '', '2026-1-001 / 01-09-26'), {
+    jevNo: '2026-1-001',
+    jevDate: '01-09-26',
+  });
+  assert.deepEqual(sanitizeJevNoPair('2026-1-001', '', '2026-1-LEGACY / 01-01-2026'), {
+    jevNo: '2026-1-001',
+  });
+  assert.deepEqual(sanitizeJevNoPair('', ''), {});
+});
+
 test('sanitizeDvSignatories whitelists A/C/D keys and normalizes states', () => {
   assert.deepEqual(defaultDvSignatories(), { a: 'ok', c: 'ok', d: 'ok' });
   assert.deepEqual(sanitizeDvSignatories({ a: 'ok', c: 'exclamation', d: 'na' }), {
@@ -1099,8 +1115,17 @@ test('Cancelled rows export as JEV-exempt instead of pending JEV', () => {
     taxWithheld: 0,
     journalLines: [],
   });
+  const withJev = makeRecord({
+    id: 'tx-j',
+    sequenceNo: 3,
+    grossAmount: 0,
+    taxWithheld: 0,
+    journalLines: [],
+    jevNo: '2026-1-001',
+    jevDate: '01-09-2026',
+  });
 
-  const { wpRows, rciRows } = buildWorkingPaperExportData([cancelled, live]);
+  const { wpRows, rciRows } = buildWorkingPaperExportData([cancelled, live, withJev]);
 
   // Cancelled checks never get a JEV, so nothing reads as pending encoding work.
   assert.equal(wpRows[0]['Account Title'], 'No JEV (cancelled)');
@@ -1122,4 +1147,7 @@ test('Cancelled rows export as JEV-exempt instead of pending JEV', () => {
   assert.equal(wpRows[1]['JEV Gross Amount'], 'Pending JEV');
   assert.equal(wpRows[1]['JEV No. and Date'], 'Pending JEV');
   assert.equal(rciRows[1]['JEV Gross Amount'], 'Pending JEV');
+
+  // Split JEV pairs render as the same slash text the old combined field used.
+  assert.equal(wpRows[2]['JEV No. and Date'], '2026-1-001 / 01-09-2026');
 });

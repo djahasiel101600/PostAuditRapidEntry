@@ -115,6 +115,9 @@ class Transaction(WorkspaceRecord):
     orDate = models.CharField(max_length=20, blank=True, default='')
     asaNo = models.CharField(max_length=40, blank=True, default='')
     jevNoDate = models.CharField(max_length=50, blank=True, default='')
+    # JEV "No / Date" split pair; jevNoDate stays as a legacy combined fallback.
+    jevNo = models.CharField(max_length=60, blank=True, default='')
+    jevDate = models.CharField(max_length=20, blank=True, default='')
     # Cancelled checks may be recorded with only date + serial; blank payee is
     # rejected for active rows in TransactionSerializer.validate().
     payeeName = models.CharField(max_length=180, blank=True, default='')

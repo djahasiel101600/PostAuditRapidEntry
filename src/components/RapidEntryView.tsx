@@ -19,7 +19,7 @@ import {
 import { AuditAttributeCell } from './AuditAttributeCell';
 import { CoaAccountPicker } from './CoaAccountPicker';
 import { SlashPairInput } from './SlashPairInput';
-import { composeSlashPair, readPair } from '../lib/slashPair';
+import { composeSlashPair, normalizePairDate, readPair } from '../lib/slashPair';
 import { useAuthWorkspace, type CreateTransactionInput } from '../contexts/AuthWorkspaceContext';
 import {
   buildBatchDraftTransactionInput,
@@ -258,7 +258,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   const [orNo, setOrNo] = useState<string>('');
   const [orDate, setOrDate] = useState<string>('');
   const [asaNo, setAsaNo] = useState<string>('');
-  const [jevNoDate, setJevNoDate] = useState<string>('');
+  const [jevNo, setJevNo] = useState<string>('');
+  const [jevDate, setJevDate] = useState<string>('');
   const [payeeName, setPayeeName] = useState<string>('');
   const [natureOfTransaction, setNatureOfTransaction] = useState<string>('');
 
@@ -473,7 +474,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setOrNo('');
     setOrDate('');
     setAsaNo('');
-    setJevNoDate('');
+    setJevNo('');
+    setJevDate('');
     setFeedbackMsg(null);
     setSearchQuery('');
     setLastCommittedId(null);
@@ -499,7 +501,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setOrNo(orPair.left);
     setOrDate(orPair.right);
     setAsaNo(editingTx.asaNo || '');
-    setJevNoDate(editingTx.jevNoDate || '');
+    const jevPair = readPair(editingTx.jevNo, editingTx.jevDate, editingTx.jevNoDate);
+    setJevNo(jevPair.left);
+    setJevDate(jevPair.right);
     setPayeeName(editingTx.payeeName);
     setNatureOfTransaction(editingTx.natureOfTransaction);
 
@@ -797,7 +801,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setOrNo('');
       setOrDate('');
       setAsaNo('');
-      setJevNoDate('');
+      setJevNo('');
+      setJevDate('');
       if (autoIncrement) {
         setSequenceNo(justPostedSeq + 1);
         setAdaCheckNo(incrementCodeString(justPostedCheck));
@@ -856,11 +861,13 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         const monthIndex = String(MONTHS.indexOf(selectedMonth) + 1).padStart(2, '0');
         // Cancelled checks never get an auto-generated JEV number; only an
         // explicitly recorded one is preserved for the audit trail.
-        const computedJev =
-          jevNoDate.trim() ||
-          (journalLines.length > 0 && !isCancelled
-            ? `${fiscalYear}-${monthIndex}-${String(sequenceNo).padStart(3, '0')} / ${adaCheckDate.slice(5)}`
-            : '');
+        const hasManualJev = Boolean(jevNo.trim() || jevDate.trim());
+        const autoJev = !hasManualJev && journalLines.length > 0 && !isCancelled;
+        const computedJevNo =
+          jevNo.trim() ||
+          (autoJev ? `${fiscalYear}-${monthIndex}-${String(sequenceNo).padStart(3, '0')}` : '');
+        const computedJevDate =
+          jevDate.trim() || (autoJev ? normalizePairDate(adaCheckDate).value : '');
 
         const effectiveGross =
           reconciliationSummary.reconciliationGrossAmount ?? parsedDeclaredJevGross;
@@ -900,7 +907,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               orNo,
               orDate,
               asaNo,
-              jevNoDate: computedJev,
+              jevNo: computedJevNo,
+              jevDate: computedJevDate,
               payeeName: payeeName.trim(),
               natureOfTransaction: isCancelled
                 ? natureOfTransaction.trim()
@@ -941,7 +949,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               orNo,
               orDate,
               asaNo,
-              jevNoDate: computedJev,
+              jevNo: computedJevNo,
+              jevDate: computedJevDate,
               payeeName: payeeName.trim(),
               natureOfTransaction: isCancelled
                 ? natureOfTransaction.trim()
@@ -1025,7 +1034,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             orNo,
             orDate,
             asaNo,
-            jevNoDate: computedJev,
+            jevNo: computedJevNo,
+            jevDate: computedJevDate,
             payeeName: payeeName.trim(),
             natureOfTransaction: isCancelled
               ? natureOfTransaction.trim()
@@ -1081,7 +1091,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       payeeName,
       balanceSummary,
       selectedMonth,
-      jevNoDate,
+      jevNo,
+      jevDate,
       journalLines,
       fiscalYear,
       sequenceNo,
@@ -2173,12 +2184,17 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   <label className="block text-[11px] font-medium text-slate-500 mb-1">
                     JEV No. and Date
                   </label>
-                  <input
-                    type="text"
-                    value={jevNoDate}
-                    onChange={(e) => setJevNoDate(e.target.value)}
-                    placeholder="Auto-assigned on post"
-                    className="w-full h-8 px-2 text-xs font-mono border border-slate-200 rounded bg-slate-50"
+                  <SlashPairInput
+                    leftValue={jevNo}
+                    rightValue={jevDate}
+                    onChange={(nextJevNo, nextJevDate) => {
+                      setJevNo(nextJevNo);
+                      setJevDate(nextJevDate);
+                    }}
+                    leftPlaceholder="2026-1-001"
+                    rightPlaceholder={`01-09-${shortYear}`}
+                    ariaLabel="JEV Number / Date"
+                    heightClass="h-8"
                   />
                 </div>
               </div>

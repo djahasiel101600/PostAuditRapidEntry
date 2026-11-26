@@ -270,6 +270,56 @@ class TransactionRuleTests(WorkspaceTestBase):
         self.assertEqual(stored.orNo, '')
         self.assertEqual(stored.orDate, '')
 
+    def test_jev_number_date_pair_roundtrip(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(self.workspace.id, jevNo='2026-1-001', jevDate='01-09-2026')
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['jevNo'], '2026-1-001')
+        self.assertEqual(response.data['jevDate'], '01-09-2026')
+
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertEqual(stored.jevNo, '2026-1-001')
+        self.assertEqual(stored.jevDate, '01-09-2026')
+
+        # Legacy combined strings stay writable for older clients.
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'jevNoDate': '2026-1-002 / 01-10-2026'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').jevNoDate, '2026-1-002 / 01-10-2026')
+
+        # Clearing the split pair persists empty strings.
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'jevNo': '', 'jevDate': ''}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        stored.refresh_from_db()
+        self.assertEqual(stored.jevNo, '')
+        self.assertEqual(stored.jevDate, '')
+
+    def test_auditor_can_update_jev_pair_on_audited_record(self):
+        self.as_user(self.encoder)
+        self.client.post(self.tx_url, tx_payload(self.workspace.id), format='json')
+
+        self.as_user(self.auditor)
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'status': 'audited', 'clerkReviewStatus': 'audited'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+        response = self.client.patch(
+            self.tx_url + 'tx-1/',
+            {'jevNo': '2026-1-001', 'jevDate': '01-09-2026'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertEqual(stored.jevNo, '2026-1-001')
+        self.assertEqual(stored.jevDate, '01-09-2026')
+
     def test_invalid_test_of_controls_status_rejected(self):
         self.as_user(self.encoder)
         payload = tx_payload(

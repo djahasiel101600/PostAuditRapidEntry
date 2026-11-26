@@ -172,7 +172,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
     )
 
     optional_empty_fields = (
-        'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'rciAmount', 'declaredJevGross',
+        'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'jevNo', 'jevDate', 'rciAmount', 'declaredJevGross',
         'grossBasisOverride', 'mathStatus', 'taxStatus', 'documentaryStatus',
         'clerkReviewStatus', 'amountModelVersion', 'legacySnapshot', 'templateId',
         'dvSignatories', 'procurement', 'testOfControls', 'remarks', 'submittedToCoaDate',
@@ -183,7 +183,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
         model = Transaction
         fields = [
             'id', 'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo',
-            'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+            'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'jevNo', 'jevDate', 'payeeName', 'natureOfTransaction',
             'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
             'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus', 'documentaryStatus',
             'clerkReviewStatus', 'verificationAuditTrail', 'amountModelVersion', 'legacySnapshot',

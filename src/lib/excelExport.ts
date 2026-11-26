@@ -135,7 +135,7 @@ export function buildWorkingPaperExportData(transactions: TransactionRecord[]): 
         'Test of Controls': isFirst ? tocStatusLabel(tx) : '',
         'Test of Controls Particulars': isFirst ? tx.testOfControls?.particulars || '' : '',
         'JEV No. and Date': isFirst
-          ? tx.jevNoDate ||
+          ? renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate) ||
             (tx.isCancelled ? 'N/A (cancelled)' : hasJevLines ? '' : 'Pending JEV')
           : '',
         'Account Code': line.accountCode,

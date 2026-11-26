@@ -321,7 +321,10 @@ export interface TransactionRecord {
   orNo?: string;
   orDate?: string;
   asaNo?: string;
+  /** @deprecated legacy combined JEV "No / Date" string — read-only fallback for pre-split records. */
   jevNoDate?: string;
+  jevNo?: string;
+  jevDate?: string;
   payeeName: string;
   natureOfTransaction: string;
   // Legacy-compatible summary fields (grossAmount = JEV Gross, netAmount = Check/ADA Net, taxWithheld = Due to BIR)

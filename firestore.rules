@@ -424,7 +424,7 @@ service cloud.firestore {
             ])
             && data.keys().hasOnly([
               'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo',
-              'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName',
+              'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'jevNo', 'jevDate', 'payeeName',
               'natureOfTransaction', 'grossAmount', 'netAmount', 'taxWithheld',
               'rciAmount', 'declaredJevGross', 'grossBasisOverride', 'taxComponents',
               'mathStatus', 'taxStatus', 'documentaryStatus', 'clerkReviewStatus',
@@ -444,6 +444,8 @@ service cloud.firestore {
             && (!('orDate' in data) || (data.orDate is string && data.orDate.size() <= 20))
             && (!('asaNo' in data) || (data.asaNo is string && data.asaNo.size() <= 40))
             && (!('jevNoDate' in data) || (data.jevNoDate is string && data.jevNoDate.size() <= 50))
+            && (!('jevNo' in data) || (data.jevNo is string && data.jevNo.size() <= 60))
+            && (!('jevDate' in data) || (data.jevDate is string && data.jevDate.size() <= 20))
             && data.payeeName is string && data.payeeName.size() > 0 && data.payeeName.size() <= 180
             && data.natureOfTransaction is string && data.natureOfTransaction.size() <= 500
             && data.grossAmount is number && data.grossAmount >= 0
@@ -500,7 +502,7 @@ service cloud.firestore {
                 && (!('clerkReviewStatus' in incoming()) || incoming().clerkReviewStatus != 'audited')
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo', 'dateReceived',
-                'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+                'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'jevNo', 'jevDate', 'payeeName', 'natureOfTransaction',
                 'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
                 'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',
                 'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',
@@ -510,12 +512,12 @@ service cloud.firestore {
               ]))
               || (isWorkspaceAuditorOrAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly([
                 'attributes', 'remarks', 'status', 'clerkReviewStatus', 'documentaryStatus',
-                'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'updatedAt'
+                'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'jevNo', 'jevDate', 'updatedAt'
               ]))
             ))
             || (existing().status == 'audited' && (isWorkspaceAuditorOrAdmin(workspaceId) || isSuperAdmin()) && incoming().diff(existing()).affectedKeys().hasOnly([
               'attributes', 'remarks', 'status', 'clerkReviewStatus', 'documentaryStatus',
-              'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'procurement', 'updatedAt'
+              'verificationAuditTrail', 'submittedToCoaDate', 'jevNoDate', 'jevNo', 'jevDate', 'procurement', 'updatedAt'
             ]))
             || (isWorkspaceAdmin(workspaceId) && incoming().diff(existing()).affectedKeys().hasOnly(['authorizedUids', 'updatedAt']))
           );

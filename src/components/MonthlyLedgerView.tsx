@@ -91,7 +91,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
         tx.payeeName.toLowerCase().includes(q) ||
         tx.adaCheckNo.toLowerCase().includes(q) ||
         tx.dvNo.toLowerCase().includes(q) ||
-        (tx.jevNoDate || '').toLowerCase().includes(q) ||
+        renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate).toLowerCase().includes(q) ||
         (tx.remarks || '').toLowerCase().includes(q) ||
         (tx.cancellationReason || '').toLowerCase().includes(q)
       );
@@ -782,7 +782,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                             rowSpan={rowSpan}
                             className="py-2 px-2.5 border-r border-slate-200 align-top font-mono tabular-nums text-[11px] text-slate-700"
                           >
-                            {tx.jevNoDate || '—'}
+                            {renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate) || '—'}
                           </td>
                         </>
                       )}

@@ -9,6 +9,7 @@ import {
   isJevPending,
   NO_JEV_CANCELLED_LABEL,
 } from '../lib/taxAndLedger';
+import { renderSlashPair } from '../lib/slashPair';
 import { MONTHS } from '../types/rci';
 
 export const ScheduleSubmissionView: React.FC = () => {
@@ -170,7 +171,8 @@ export const ScheduleSubmissionView: React.FC = () => {
                       </td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-500">{tx.sequenceNo}</td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-800">
-                        {tx.jevNoDate || (jevExempt ? NO_JEV_CANCELLED_LABEL : 'Pending JEV')}
+                        {renderSlashPair(tx.jevNo, tx.jevDate, tx.jevNoDate) ||
+                          (jevExempt ? NO_JEV_CANCELLED_LABEL : 'Pending JEV')}
                       </td>
                       <td className="py-2.5 px-3 font-mono tabular-nums text-slate-900">
                         {tx.adaCheckNo}
