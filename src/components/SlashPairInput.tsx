@@ -10,6 +10,8 @@ interface SlashPairInputProps {
   rightMode?: 'text' | 'date';
   disabled?: boolean;
   ariaLabel?: string;
+  /** Container height utility, so the field can match taller form rows (default h-7). */
+  heightClass?: string;
 }
 
 /**
@@ -27,6 +29,7 @@ export const SlashPairInput: React.FC<SlashPairInputProps> = ({
   rightMode = 'date',
   disabled = false,
   ariaLabel,
+  heightClass = 'h-7',
 }) => {
   const [leftDraft, setLeftDraft] = useState('');
   const [rightDraft, setRightDraft] = useState('');
@@ -95,7 +98,7 @@ export const SlashPairInput: React.FC<SlashPairInputProps> = ({
       role="group"
       aria-label={ariaLabel}
       title={dateInvalid ? 'Date part not recognized (MM-DD-YYYY)' : undefined}
-      className={`w-full h-7 flex items-center rounded border bg-slate-50 px-2 text-xs focus-within:border-blue-600 ${
+      className={`w-full ${heightClass} flex items-center rounded border bg-slate-50 px-2 text-xs focus-within:border-blue-600 ${
         dateInvalid ? 'border-amber-400' : 'border-slate-200'
       } ${disabled ? 'opacity-60' : ''}`}
     >

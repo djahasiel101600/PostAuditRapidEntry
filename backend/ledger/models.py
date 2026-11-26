@@ -110,6 +110,9 @@ class Transaction(WorkspaceRecord):
     dvNo = models.CharField(max_length=40, blank=True, default='')
     dateReceived = models.CharField(max_length=20, blank=True, default='')
     orNoDate = models.CharField(max_length=40, blank=True, default='')
+    # OR "No / Date" split pair; orNoDate stays as a legacy combined fallback.
+    orNo = models.CharField(max_length=60, blank=True, default='')
+    orDate = models.CharField(max_length=20, blank=True, default='')
     asaNo = models.CharField(max_length=40, blank=True, default='')
     jevNoDate = models.CharField(max_length=50, blank=True, default='')
     # Cancelled checks may be recorded with only date + serial; blank payee is

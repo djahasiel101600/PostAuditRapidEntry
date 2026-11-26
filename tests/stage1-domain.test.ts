@@ -38,6 +38,7 @@ import {
   paymentModeLabel,
   resolveJournalLineRole,
   sanitizeDvSignatories,
+  sanitizeOrNoPair,
   sanitizeProcurement,
   sanitizeTestOfControls,
   suggestPresetIdForBirTitle,
@@ -721,7 +722,26 @@ test('composeSlashPair and readPair rebuild the display string with legacy fallb
   assert.deepEqual(readPair('', '', undefined), { left: '', right: '' });
 });
 
-test('sanitizeDvSignatories whitelists A/B/C keys and normalizes states', () => {
+test('sanitizeOrNoPair stores split OR fields and only reads the legacy string as fallback', () => {
+  assert.deepEqual(sanitizeOrNoPair('OR #8812', '01-09-2026'), {
+    orNo: 'OR #8812',
+    orDate: '01-09-2026',
+  });
+  assert.deepEqual(sanitizeOrNoPair('', '', 'OR #8812 / 01-09-26'), {
+    orNo: 'OR #8812',
+    orDate: '01-09-26',
+  });
+  assert.deepEqual(sanitizeOrNoPair('OR-1', '', 'OR-LEGACY / 01-01-2026'), {
+    orNo: 'OR-1',
+  });
+  assert.deepEqual(sanitizeOrNoPair('', ''), {});
+  assert.deepEqual(sanitizeOrNoPair(`  ${'X'.repeat(80)}  `, ' 01-09-2026 '), {
+    orNo: 'X'.repeat(60),
+    orDate: '01-09-2026',
+  });
+});
+
+test('sanitizeDvSignatories whitelists A/C/D keys and normalizes states', () => {
   assert.deepEqual(defaultDvSignatories(), { a: 'ok', c: 'ok', d: 'ok' });
   assert.deepEqual(sanitizeDvSignatories({ a: 'ok', c: 'exclamation', d: 'na' }), {
     a: 'ok',
@@ -729,12 +749,12 @@ test('sanitizeDvSignatories whitelists A/B/C keys and normalizes states', () => 
     d: 'na',
   });
   assert.deepEqual(
-    sanitizeDvSignatories({ a: 'ok', d: 'ok' } as unknown as DvSignatoriesMap),
+    sanitizeDvSignatories({ a: 'ok', b: 'ok' } as unknown as DvSignatoriesMap),
     { a: 'ok' },
   );
   assert.deepEqual(
-    sanitizeDvSignatories({ a: 'flag', b: 'bogus' } as unknown as DvSignatoriesMap),
-    { a: 'exclamation', b: 'ok' },
+    sanitizeDvSignatories({ a: 'flag', d: 'bogus' } as unknown as DvSignatoriesMap),
+    { a: 'exclamation', d: 'ok' },
   );
   assert.equal(sanitizeDvSignatories(undefined), undefined);
   assert.equal(sanitizeDvSignatories({}), undefined);

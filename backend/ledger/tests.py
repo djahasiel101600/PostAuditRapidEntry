@@ -230,17 +230,45 @@ class TransactionRuleTests(WorkspaceTestBase):
         self.as_user(self.encoder)
         payload = tx_payload(
             self.workspace.id,
-            dvSignatories={'a': 'ok', 'b': 'exclamation', 'c': 'na'},
+            dvSignatories={'a': 'ok', 'c': 'exclamation', 'd': 'na'},
             testOfControls={'status': 'suspended', 'particulars': 'DV 2026-01-0001 — awaiting OR copy.'},
         )
         response = self.client.post(self.tx_url, payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_201_CREATED)
-        self.assertEqual(response.data['dvSignatories']['b'], 'exclamation')
+        self.assertEqual(response.data['dvSignatories']['c'], 'exclamation')
         self.assertEqual(response.data['testOfControls']['status'], 'suspended')
 
         stored = Transaction.objects.get(pk='tx-1')
-        self.assertEqual(stored.dvSignatories, {'a': 'ok', 'b': 'exclamation', 'c': 'na'})
+        self.assertEqual(stored.dvSignatories, {'a': 'ok', 'c': 'exclamation', 'd': 'na'})
         self.assertEqual(stored.testOfControls['particulars'], 'DV 2026-01-0001 — awaiting OR copy.')
+
+    def test_or_number_date_pair_roundtrip(self):
+        self.as_user(self.encoder)
+        payload = tx_payload(self.workspace.id, orNo='OR #8812', orDate='01-09-2026')
+        response = self.client.post(self.tx_url, payload, format='json')
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(response.data['orNo'], 'OR #8812')
+        self.assertEqual(response.data['orDate'], '01-09-2026')
+
+        stored = Transaction.objects.get(pk='tx-1')
+        self.assertEqual(stored.orNo, 'OR #8812')
+        self.assertEqual(stored.orDate, '01-09-2026')
+
+        # Legacy combined strings stay writable for older clients.
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'orNoDate': 'OR #9000 / 02-10-2026'}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(Transaction.objects.get(pk='tx-1').orNoDate, 'OR #9000 / 02-10-2026')
+
+        # Clearing the split pair persists empty strings.
+        response = self.client.patch(
+            self.tx_url + 'tx-1/', {'orNo': '', 'orDate': ''}, format='json'
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        stored.refresh_from_db()
+        self.assertEqual(stored.orNo, '')
+        self.assertEqual(stored.orDate, '')
 
     def test_invalid_test_of_controls_status_rejected(self):
         self.as_user(self.encoder)
@@ -252,7 +280,7 @@ class TransactionRuleTests(WorkspaceTestBase):
 
     def test_invalid_dv_signatories_rejected(self):
         self.as_user(self.encoder)
-        payload = tx_payload(self.workspace.id, dvSignatories={'a': 'ok', 'd': 'ok'})
+        payload = tx_payload(self.workspace.id, dvSignatories={'a': 'ok', 'b': 'ok'})
         response = self.client.post(self.tx_url, payload, format='json')
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 

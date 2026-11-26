@@ -1253,6 +1253,22 @@ export function sanitizeProcurement(proc?: ProcurementMeta): ProcurementMeta | u
   return Object.keys(cleaned).length > 0 ? cleaned : undefined;
 }
 
+/**
+ * Split the OR "No / Date" pair into independently stored fields. The legacy
+ * combined `orNoDate` is parsed as a fallback but never written back.
+ */
+export function sanitizeOrNoPair(
+  no?: string | null,
+  date?: string | null,
+  legacy?: string | null,
+): { orNo?: string; orDate?: string } {
+  const pair = readPair(no, date, legacy);
+  const cleaned: { orNo?: string; orDate?: string } = {};
+  if (pair.left) cleaned.orNo = pair.left.slice(0, 60);
+  if (pair.right) cleaned.orDate = pair.right.slice(0, 20);
+  return cleaned;
+}
+
 export function defaultDvSignatories(): DvSignatoriesMap {
   return { a: 'ok', c: 'ok', d: 'ok' };
 }
@@ -1260,7 +1276,7 @@ export function defaultDvSignatories(): DvSignatoriesMap {
 export function sanitizeDvSignatories(input?: DvSignatoriesMap | null): DvSignatoriesMap | undefined {
   if (!input) return undefined;
   const cleaned: DvSignatoriesMap = {};
-  (['a', 'b', 'c'] as const).forEach((key) => {
+  (['a', 'c', 'd'] as const).forEach((key) => {
     const raw = input[key];
     if (raw === undefined || raw === null) return;
     cleaned[key] = normalizeAttributeState(raw);

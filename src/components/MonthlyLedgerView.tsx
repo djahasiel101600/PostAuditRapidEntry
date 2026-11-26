@@ -683,7 +683,7 @@ export const MonthlyLedgerView: React.FC<MonthlyLedgerViewProps> = ({ onEditInRa
                                 rowSpan={rowSpan}
                                 className="py-2 px-2 border-r border-slate-200 align-top bg-amber-50/30 font-mono text-[11px] text-slate-700 whitespace-nowrap"
                               >
-                                {tx.procurement?.orInvoiceRef || tx.orNoDate || '—'}
+                                {tx.procurement?.orInvoiceRef || renderSlashPair(tx.orNo, tx.orDate, tx.orNoDate) || '—'}
                               </td>
                             </>
                           )}

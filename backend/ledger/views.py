@@ -49,7 +49,7 @@ TX_AUDIT_FIELDS = {
 }
 TX_FULL_EDIT_FIELDS = {
     'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo', 'dateReceived',
-    'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+    'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
     'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
     'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',
     'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',

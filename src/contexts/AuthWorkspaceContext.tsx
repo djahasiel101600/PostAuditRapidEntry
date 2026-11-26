@@ -30,6 +30,7 @@ import {
   round2,
   sanitizeJournalLines,
   sanitizeDvSignatories,
+  sanitizeOrNoPair,
   sanitizeProcurement,
   sanitizeTaxComponents,
   sanitizeTestOfControls,
@@ -76,7 +77,10 @@ export interface CreateTransactionInput {
   paymentMode?: PaymentMode;
   dvNo: string;
   dateReceived?: string;
+  /** @deprecated legacy combined OR "No / Date" string — parsed as fallback, never written back. */
   orNoDate?: string;
+  orNo?: string;
+  orDate?: string;
   asaNo?: string;
   jevNoDate?: string;
   payeeName: string;
@@ -799,7 +803,9 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       }
       if (input.legacySnapshot) payload.legacySnapshot = input.legacySnapshot;
       if (input.dateReceived?.trim()) payload.dateReceived = cleanString(input.dateReceived, 20);
-      if (input.orNoDate?.trim()) payload.orNoDate = cleanString(input.orNoDate, 40);
+      const orPair = sanitizeOrNoPair(input.orNo, input.orDate, input.orNoDate);
+      if (orPair.orNo) payload.orNo = orPair.orNo;
+      if (orPair.orDate) payload.orDate = orPair.orDate;
       if (input.asaNo?.trim()) payload.asaNo = cleanString(input.asaNo, 40);
       if (input.jevNoDate?.trim()) payload.jevNoDate = cleanString(input.jevNoDate, 50);
       if (input.templateId?.trim()) payload.templateId = cleanString(input.templateId, 128);
@@ -886,7 +892,14 @@ export const AuthWorkspaceProvider: React.FC<{ children: React.ReactNode }> = ({
       if (patch.paymentMode !== undefined) cleanPatch.paymentMode = normalizePaymentMode(patch.paymentMode);
       if (patch.dvNo !== undefined) cleanPatch.dvNo = cleanString(patch.dvNo, 40);
       if (patch.dateReceived !== undefined) cleanPatch.dateReceived = cleanString(patch.dateReceived, 20);
-      if (patch.orNoDate !== undefined) cleanPatch.orNoDate = cleanString(patch.orNoDate, 40);
+      if (patch.orNo !== undefined) cleanPatch.orNo = cleanString(patch.orNo, 60);
+      if (patch.orDate !== undefined) cleanPatch.orDate = cleanString(patch.orDate, 20);
+      // Legacy combined "No / Date" input: store the parsed halves, never the combined form.
+      if (patch.orNoDate !== undefined && patch.orNo === undefined && patch.orDate === undefined) {
+        const orPair = sanitizeOrNoPair('', '', patch.orNoDate);
+        cleanPatch.orNo = orPair.orNo || '';
+        cleanPatch.orDate = orPair.orDate || '';
+      }
       if (patch.asaNo !== undefined) cleanPatch.asaNo = cleanString(patch.asaNo, 40);
       if (patch.jevNoDate !== undefined) cleanPatch.jevNoDate = cleanString(patch.jevNoDate, 50);
       if (patch.payeeName !== undefined) {

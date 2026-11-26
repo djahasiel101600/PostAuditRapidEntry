@@ -316,7 +316,10 @@ export interface TransactionRecord {
   paymentMode?: PaymentMode;
   dvNo: string;
   dateReceived?: string;
+  /** @deprecated legacy combined OR "No / Date" string — read-only fallback for pre-split records. */
   orNoDate?: string;
+  orNo?: string;
+  orDate?: string;
   asaNo?: string;
   jevNoDate?: string;
   payeeName: string;

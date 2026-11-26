@@ -27,7 +27,7 @@ MONTHS = [
     'July', 'August', 'September', 'October', 'November', 'December',
 ]
 ATTRIBUTE_STATES = ['ok', 'flag', 'exclamation', 'wrong', 'na']
-DV_SIGNATORY_KEYS = {'a', 'b', 'c'}
+DV_SIGNATORY_KEYS = {'a', 'c', 'd'}
 DV_SIGNATORY_STATES = ['ok', 'exclamation', 'wrong', 'na']
 TEST_OF_CONTROLS_STATUSES = ['allowed', 'suspended', 'disallowed']
 ACCOUNT_ROLES = [
@@ -172,7 +172,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
     )
 
     optional_empty_fields = (
-        'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'rciAmount', 'declaredJevGross',
+        'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'rciAmount', 'declaredJevGross',
         'grossBasisOverride', 'mathStatus', 'taxStatus', 'documentaryStatus',
         'clerkReviewStatus', 'amountModelVersion', 'legacySnapshot', 'templateId',
         'dvSignatories', 'procurement', 'testOfControls', 'remarks', 'submittedToCoaDate',
@@ -183,7 +183,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
         model = Transaction
         fields = [
             'id', 'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'paymentMode', 'dvNo',
-            'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+            'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
             'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
             'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus', 'documentaryStatus',
             'clerkReviewStatus', 'verificationAuditTrail', 'amountModelVersion', 'legacySnapshot',
@@ -270,7 +270,7 @@ class TransactionSerializer(WorkspaceRecordSerializer):
         if not isinstance(value, dict):
             raise serializers.ValidationError('dvSignatories must be an object.')
         if not set(value.keys()) <= DV_SIGNATORY_KEYS:
-            raise serializers.ValidationError('dvSignatories keys must be a subset of a/b/c.')
+            raise serializers.ValidationError('dvSignatories keys must be a subset of a/c/d.')
         if any(v not in DV_SIGNATORY_STATES for v in value.values()):
             raise serializers.ValidationError('Invalid dvSignatories state.')
         return value

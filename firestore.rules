@@ -424,7 +424,7 @@ service cloud.firestore {
             ])
             && data.keys().hasOnly([
               'workspaceId', 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo',
-              'dateReceived', 'orNoDate', 'asaNo', 'jevNoDate', 'payeeName',
+              'dateReceived', 'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName',
               'natureOfTransaction', 'grossAmount', 'netAmount', 'taxWithheld',
               'rciAmount', 'declaredJevGross', 'grossBasisOverride', 'taxComponents',
               'mathStatus', 'taxStatus', 'documentaryStatus', 'clerkReviewStatus',
@@ -440,6 +440,8 @@ service cloud.firestore {
             && data.dvNo is string && data.dvNo.size() <= 40
             && (!('dateReceived' in data) || (data.dateReceived is string && data.dateReceived.size() <= 20))
             && (!('orNoDate' in data) || (data.orNoDate is string && data.orNoDate.size() <= 40))
+            && (!('orNo' in data) || (data.orNo is string && data.orNo.size() <= 60))
+            && (!('orDate' in data) || (data.orDate is string && data.orDate.size() <= 20))
             && (!('asaNo' in data) || (data.asaNo is string && data.asaNo.size() <= 40))
             && (!('jevNoDate' in data) || (data.jevNoDate is string && data.jevNoDate.size() <= 50))
             && data.payeeName is string && data.payeeName.size() > 0 && data.payeeName.size() <= 180
@@ -498,7 +500,7 @@ service cloud.firestore {
                 && (!('clerkReviewStatus' in incoming()) || incoming().clerkReviewStatus != 'audited')
                 && incoming().diff(existing()).affectedKeys().hasOnly([
                 'month', 'sequenceNo', 'adaCheckDate', 'adaCheckNo', 'dvNo', 'dateReceived',
-                'orNoDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
+                'orNoDate', 'orNo', 'orDate', 'asaNo', 'jevNoDate', 'payeeName', 'natureOfTransaction',
                 'grossAmount', 'netAmount', 'taxWithheld', 'rciAmount', 'declaredJevGross',
                 'grossBasisOverride', 'taxComponents', 'mathStatus', 'taxStatus',
                 'documentaryStatus', 'clerkReviewStatus', 'verificationAuditTrail',

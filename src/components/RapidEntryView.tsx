@@ -19,7 +19,7 @@ import {
 import { AuditAttributeCell } from './AuditAttributeCell';
 import { CoaAccountPicker } from './CoaAccountPicker';
 import { SlashPairInput } from './SlashPairInput';
-import { readPair } from '../lib/slashPair';
+import { composeSlashPair, readPair } from '../lib/slashPair';
 import { useAuthWorkspace, type CreateTransactionInput } from '../contexts/AuthWorkspaceContext';
 import {
   buildBatchDraftTransactionInput,
@@ -255,7 +255,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
   >('');
   const [dvNo, setDvNo] = useState<string>(nextDefaults.dvNo);
   const [dateReceived, setDateReceived] = useState<string>('');
-  const [orNoDate, setOrNoDate] = useState<string>('');
+  const [orNo, setOrNo] = useState<string>('');
+  const [orDate, setOrDate] = useState<string>('');
   const [asaNo, setAsaNo] = useState<string>('');
   const [jevNoDate, setJevNoDate] = useState<string>('');
   const [payeeName, setPayeeName] = useState<string>('');
@@ -469,7 +470,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setPhilgepsLookup({ status: 'idle' });
     setShowProcurement(false);
     setDateReceived('');
-    setOrNoDate('');
+    setOrNo('');
+    setOrDate('');
     setAsaNo('');
     setJevNoDate('');
     setFeedbackMsg(null);
@@ -493,7 +495,9 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
     setCancelledCheckAttachment(editingTx.cancelledCheckAttachment || '');
     setDvNo(editingTx.dvNo);
     setDateReceived(editingTx.dateReceived || '');
-    setOrNoDate(editingTx.orNoDate || '');
+    const orPair = readPair(editingTx.orNo, editingTx.orDate, editingTx.orNoDate);
+    setOrNo(orPair.left);
+    setOrDate(orPair.right);
     setAsaNo(editingTx.asaNo || '');
     setJevNoDate(editingTx.jevNoDate || '');
     setPayeeName(editingTx.payeeName);
@@ -790,7 +794,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       setProcurement({});
       setPhilgepsLookup({ status: 'idle' });
       setDateReceived('');
-      setOrNoDate('');
+      setOrNo('');
+      setOrDate('');
       setAsaNo('');
       setJevNoDate('');
       if (autoIncrement) {
@@ -892,7 +897,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment : undefined,
               dvNo,
               dateReceived,
-              orNoDate,
+              orNo,
+              orDate,
               asaNo,
               jevNoDate: computedJev,
               payeeName: payeeName.trim(),
@@ -932,7 +938,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
               cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment : undefined,
               dvNo,
               dateReceived,
-              orNoDate,
+              orNo,
+              orDate,
               asaNo,
               jevNoDate: computedJev,
               payeeName: payeeName.trim(),
@@ -1015,7 +1022,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
             cancelledCheckAttachment: isCancelled ? cancelledCheckAttachment || undefined : undefined,
             dvNo,
             dateReceived,
-            orNoDate,
+            orNo,
+            orDate,
             asaNo,
             jevNoDate: computedJev,
             payeeName: payeeName.trim(),
@@ -1090,7 +1098,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
       adaCheckNo,
       dvNo,
       dateReceived,
-      orNoDate,
+      orNo,
+      orDate,
       asaNo,
       natureOfTransaction,
       selectedTemplateId,
@@ -1480,8 +1489,8 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
         line?.accountTitle || matchingPreset?.defaultBirAccountTitle || 'Due to BIR - 5%',
       taxClassification: matchingPreset?.applicableClassification || 'Creditable Withholding Tax',
       applicableRate: rate,
-      supportingDocRef: procurement.orInvoiceRef || orNoDate || '',
-      hasCompleteEvidence: Boolean(procurement.orInvoiceRef || orNoDate),
+      supportingDocRef: procurement.orInvoiceRef || composeSlashPair(orNo, orDate) || '',
+      hasCompleteEvidence: Boolean(procurement.orInvoiceRef || orNo || orDate),
       classificationUncertain: false,
       taxBaseType: matchingPreset?.defaultTaxBaseType || 'vatable_sales',
       taxBaseAmount: derivedBase,
@@ -2137,12 +2146,17 @@ export const RapidEntryView: React.FC<RapidEntryViewProps> = ({
                   <label className="block text-[11px] font-medium text-slate-500 mb-1">
                     OR No. / Date
                   </label>
-                  <input
-                    type="text"
-                    value={orNoDate}
-                    onChange={(e) => setOrNoDate(e.target.value)}
-                    placeholder="OR #8812 / 01-09-26"
-                    className="w-full h-8 px-2 text-xs font-mono border border-slate-200 rounded bg-slate-50"
+                  <SlashPairInput
+                    leftValue={orNo}
+                    rightValue={orDate}
+                    onChange={(nextOrNo, nextOrDate) => {
+                      setOrNo(nextOrNo);
+                      setOrDate(nextOrDate);
+                    }}
+                    leftPlaceholder="OR #8812"
+                    rightPlaceholder={`01-09-${shortYear}`}
+                    ariaLabel="OR Number / Date"
+                    heightClass="h-8"
                   />
                 </div>
                 <div>
