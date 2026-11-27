@@ -130,10 +130,10 @@ const LEDGER_COLUMNS: LedgerColumn[] = [
 /** Injected between DV Sig. and Test of Controls while the purchases toggle is on. */
 const PROCUREMENT_COLUMNS: LedgerColumn[] = [
   { key: 'poToCoa', label: 'PO to COA', width: 104 },
-  { key: 'poNoDate', label: 'PO No./Date', width: 124 },
+  { key: 'poNoDate', label: 'PO No./Date', width: 216 },
   { key: 'method', label: 'Method', width: 128 },
   { key: 'philgeps', label: 'PhilGEPS/Date', width: 124 },
-  { key: 'prNoDate', label: 'PR No./Date', width: 124 },
+  { key: 'prNoDate', label: 'PR No./Date', width: 216 },
   { key: 'abstractDate', label: 'Abstract/Date', width: 124 },
   { key: 'rfq', label: 'RFQ (3)', width: 72 },
   { key: 'iar', label: 'IAR / Date', width: 124 },
