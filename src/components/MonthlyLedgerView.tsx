@@ -137,7 +137,7 @@ const PROCUREMENT_COLUMNS: LedgerColumn[] = [
   { key: 'abstractDate', label: 'Abstract/Date', width: 124 },
   { key: 'rfq', label: 'RFQ (3)', width: 72 },
   { key: 'iar', label: 'IAR / Date', width: 216 },
-  { key: 'orRef', label: 'OR / Invoice No.', width: 136 },
+  { key: 'orRef', label: 'OR / Invoice No.', width: 216 },
 ];
 
 /** Only a leading block can be pinned — the same rule Excel enforces. */
