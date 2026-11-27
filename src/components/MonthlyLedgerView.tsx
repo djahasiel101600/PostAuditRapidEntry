@@ -136,7 +136,7 @@ const PROCUREMENT_COLUMNS: LedgerColumn[] = [
   { key: 'prNoDate', label: 'PR No./Date', width: 216 },
   { key: 'abstractDate', label: 'Abstract/Date', width: 124 },
   { key: 'rfq', label: 'RFQ (3)', width: 72 },
-  { key: 'iar', label: 'IAR / Date', width: 124 },
+  { key: 'iar', label: 'IAR / Date', width: 216 },
   { key: 'orRef', label: 'OR / Invoice No.', width: 136 },
 ];
 
